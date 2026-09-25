@@ -37,6 +37,7 @@
     </Compile>
   </ItemGroup>
   <ItemGroup>
+    <Content Include=".gitattributes" />
     <Content Include="dark.qss" />
     <Content Include="ProjectWindow.ui" />
     <Content Include="Interpreter_Manager.ui" />
