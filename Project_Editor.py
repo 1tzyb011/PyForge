@@ -7,6 +7,8 @@ from PySide6.QtCore import (
     QFile,
     QObject,
     QProcess,
+    QEvent,
+    Qt,
 )
 from PySide6.QtUiTools import QUiLoader
 
@@ -18,7 +20,9 @@ class ProjectEditor(QObject):
     def __init__(self):
         super().__init__()
 
-        self.window = self.load_ui("ProjectWindow.ui")
+        self.window = self.load_ui(
+            "ProjectWindow.ui"
+        )
 
         if self.window is None:
             raise RuntimeError(
@@ -27,12 +31,34 @@ class ProjectEditor(QObject):
 
         self.parser = PythonParser()
 
+        # Python program process
         self.process = None
+
+        # Persistent editor terminal process
+        self.terminal_process = None
+
+        # Temporary file used by the current editor
         self.temp_file = None
+
+        # Input boundaries
+        self.input_start = 0
+        self.terminal_input_start = 0
 
         self.connect_actions()
 
-        self.write_terminal(
+        # Console input
+        self.window.Console.installEventFilter(
+            self
+        )
+
+        # Terminal input
+        self.window.Terminal.installEventFilter(
+            self
+        )
+
+        self.start_terminal()
+
+        self.write_terminal_output(
             "pyForge Project Editor started."
         )
 
@@ -46,10 +72,13 @@ class ProjectEditor(QObject):
         if not ui_file.open(
             QFile.OpenModeFlag.ReadOnly
         ):
-            print(f"Failed to open UI file: {path}")
+            print(
+                f"Failed to open UI file: {path}"
+            )
             return None
 
         loader = QUiLoader()
+
         loader.registerCustomWidget(
             PythonCodeEditor
         )
@@ -59,7 +88,9 @@ class ProjectEditor(QObject):
         ui_file.close()
 
         if window is None:
-            print(f"Failed to load UI file: {path}")
+            print(
+                f"Failed to load UI file: {path}"
+            )
 
         return window
 
@@ -100,7 +131,7 @@ class ProjectEditor(QObject):
         editor = self.get_current_editor()
 
         if editor is None:
-            self.write_terminal(
+            self.write_terminal_output(
                 "No editor is currently selected."
             )
             return
@@ -108,22 +139,22 @@ class ProjectEditor(QObject):
         source = editor.toPlainText()
 
         if not source.strip():
-            self.write_terminal(
+            self.write_terminal_output(
                 "Nothing to run."
             )
             return
 
-        # Don't allow multiple processes
+        # Don't allow multiple Python processes
         if self.process is not None:
             if self.process.state() != (
                 QProcess.ProcessState.NotRunning
             ):
-                self.write_terminal(
+                self.write_terminal_output(
                     "A process is already running."
                 )
                 return
 
-        # Parse ONLY when Run is pressed
+        # Parse only when Run is pressed
         result = self.parser.parse(source)
 
         if not result["success"]:
@@ -131,15 +162,13 @@ class ProjectEditor(QObject):
                 result["error"]
             )
 
-            self.write_terminal(
+            self.write_terminal_output(
                 "Run cancelled because the script "
                 "contains syntax errors."
             )
 
             return
 
-        # Clear previous Problems only after
-        # successfully beginning a new run.
         self.clear_problems()
 
         # --------------------------------------------------
@@ -165,7 +194,6 @@ class ProjectEditor(QObject):
                 "line": None,
                 "column": None,
             })
-
             return
 
         # --------------------------------------------------
@@ -174,12 +202,19 @@ class ProjectEditor(QObject):
 
         self.window.Console.clear()
 
-        self.write_terminal(
-            f"Running {os.path.basename(self.temp_file)}..."
+        self.input_start = 0
+
+        self.window.TerminalTabWidget.setCurrentWidget(
+            self.window.ConsoleTab
+        )
+
+        self.write_terminal_output(
+            f"Running "
+            f"{os.path.basename(self.temp_file)}..."
         )
 
         # --------------------------------------------------
-        # Create QProcess
+        # Create Python QProcess
         # --------------------------------------------------
 
         self.process = QProcess(self)
@@ -189,7 +224,8 @@ class ProjectEditor(QObject):
         )
 
         self.process.setArguments([
-            self.temp_file
+            "-u",
+            self.temp_file,
         ])
 
         self.process.setWorkingDirectory(
@@ -267,16 +303,16 @@ class ProjectEditor(QObject):
             QProcess.ExitStatus.NormalExit
         ):
             if exit_code == 0:
-                self.write_terminal(
+                self.write_terminal_output(
                     "Process finished successfully."
                 )
             else:
-                self.write_terminal(
+                self.write_terminal_output(
                     f"Process exited with code "
                     f"{exit_code}."
                 )
         else:
-            self.write_terminal(
+            self.write_terminal_output(
                 "Process crashed."
             )
 
@@ -297,8 +333,393 @@ class ProjectEditor(QObject):
                 self.process.errorString()
             )
 
-            self.write_terminal(
+            self.write_terminal_output(
                 "Failed to start Python process."
+            )
+
+    # --------------------------------------------------
+    # Console input
+    # --------------------------------------------------
+
+    def handle_console_key(self, event):
+        console = self.window.Console
+
+        # Enter
+        if event.key() in (
+            Qt.Key.Key_Return,
+            Qt.Key.Key_Enter,
+        ):
+            cursor = console.textCursor()
+
+            cursor.movePosition(
+                cursor.MoveOperation.End
+            )
+
+            console.setTextCursor(cursor)
+
+            current_text = console.toPlainText()
+
+            user_input = current_text[
+                self.input_start:
+            ]
+
+            console.insertPlainText("\n")
+
+            self.input_start = (
+                len(console.toPlainText())
+            )
+
+            if self.process is not None:
+                if self.process.state() != (
+                    QProcess.ProcessState.NotRunning
+                ):
+                    self.process.write(
+                        (
+                            user_input + "\n"
+                        ).encode("utf-8")
+                    )
+
+            return True
+
+        # Backspace
+        if event.key() == Qt.Key.Key_Backspace:
+            cursor = console.textCursor()
+
+            if cursor.position() <= self.input_start:
+                return True
+
+            if cursor.hasSelection():
+                if cursor.selectionStart() < (
+                    self.input_start
+                ):
+                    return True
+
+            return False
+
+        # Left arrow
+        if event.key() == Qt.Key.Key_Left:
+            cursor = console.textCursor()
+
+            if cursor.position() <= self.input_start:
+                return True
+
+            return False
+
+        # Home
+        if event.key() == Qt.Key.Key_Home:
+            cursor = console.textCursor()
+
+            cursor.setPosition(
+                self.input_start
+            )
+
+            console.setTextCursor(cursor)
+
+            return True
+
+        return False
+
+    # --------------------------------------------------
+    # Terminal
+    # --------------------------------------------------
+
+    def start_terminal(self):
+        if self.terminal_process is not None:
+            if self.terminal_process.state() != (
+                QProcess.ProcessState.NotRunning
+            ):
+                return
+
+        self.window.Terminal.clear()
+
+        self.terminal_input_start = 0
+
+        self.terminal_process = QProcess(
+            self
+        )
+
+        if os.name == "nt":
+            shell = os.environ.get(
+                "COMSPEC",
+                "cmd.exe",
+            )
+
+            self.terminal_process.setProgram(
+                shell
+            )
+
+            self.terminal_process.setArguments([
+                "/Q",
+            ])
+
+        else:
+            shell = os.environ.get(
+                "SHELL",
+                "/bin/bash",
+            )
+
+            self.terminal_process.setProgram(
+                shell
+            )
+
+            self.terminal_process.setArguments([
+                "-i",
+            ])
+
+        self.terminal_process.setWorkingDirectory(
+            os.getcwd()
+        )
+
+        self.terminal_process.setProcessChannelMode(
+            QProcess.ProcessChannelMode.SeparateChannels
+        )
+
+        self.terminal_process.readyReadStandardOutput.connect(
+            self.read_terminal_stdout
+        )
+
+        self.terminal_process.readyReadStandardError.connect(
+            self.read_terminal_stderr
+        )
+
+        self.terminal_process.finished.connect(
+            self.terminal_finished
+        )
+
+        self.terminal_process.errorOccurred.connect(
+            self.terminal_error
+        )
+
+        self.terminal_process.start()
+
+    # --------------------------------------------------
+    # Terminal stdout
+    # --------------------------------------------------
+
+    def read_terminal_stdout(self):
+        if self.terminal_process is None:
+            return
+
+        data = (
+            self.terminal_process
+            .readAllStandardOutput()
+        )
+
+        text = bytes(data).decode(
+            "utf-8",
+            errors="replace",
+        )
+
+        if text:
+            self.write_terminal_output(
+                text
+            )
+
+    # --------------------------------------------------
+    # Terminal stderr
+    # --------------------------------------------------
+
+    def read_terminal_stderr(self):
+        if self.terminal_process is None:
+            return
+
+        data = (
+            self.terminal_process
+            .readAllStandardError()
+        )
+
+        text = bytes(data).decode(
+            "utf-8",
+            errors="replace",
+        )
+
+        if text:
+            self.write_terminal_output(
+                text
+            )
+
+    # --------------------------------------------------
+    # Terminal output
+    # --------------------------------------------------
+
+    def write_terminal_output(self, text):
+        terminal = self.window.Terminal
+
+        cursor = terminal.textCursor()
+
+        cursor.movePosition(
+            cursor.MoveOperation.End
+        )
+
+        terminal.setTextCursor(cursor)
+
+        terminal.insertPlainText(text)
+
+        cursor.movePosition(
+            cursor.MoveOperation.End
+        )
+
+        terminal.setTextCursor(cursor)
+
+        self.terminal_input_start = (
+            len(terminal.toPlainText())
+        )
+
+    # --------------------------------------------------
+    # Terminal input
+    # --------------------------------------------------
+
+    def handle_terminal_key(self, event):
+        terminal = self.window.Terminal
+
+        # Enter
+        if event.key() in (
+            Qt.Key.Key_Return,
+            Qt.Key.Key_Enter,
+        ):
+            cursor = terminal.textCursor()
+
+            cursor.movePosition(
+                cursor.MoveOperation.End
+            )
+
+            terminal.setTextCursor(cursor)
+
+            current_text = (
+                terminal.toPlainText()
+            )
+
+            command = current_text[
+                self.terminal_input_start:
+            ]
+
+            terminal.insertPlainText("\n")
+
+            self.terminal_input_start = (
+                len(terminal.toPlainText())
+            )
+
+            if self.terminal_process is not None:
+                if self.terminal_process.state() != (
+                    QProcess.ProcessState.NotRunning
+                ):
+                    self.terminal_process.write(
+                        (
+                            command + "\n"
+                        ).encode("utf-8")
+                    )
+
+            return True
+
+        # Backspace
+        if event.key() == Qt.Key.Key_Backspace:
+            cursor = terminal.textCursor()
+
+            if cursor.position() <= (
+                self.terminal_input_start
+            ):
+                return True
+
+            if cursor.hasSelection():
+                if cursor.selectionStart() < (
+                    self.terminal_input_start
+                ):
+                    return True
+
+            return False
+
+        # Left arrow
+        if event.key() == Qt.Key.Key_Left:
+            cursor = terminal.textCursor()
+
+            if cursor.position() <= (
+                self.terminal_input_start
+            ):
+                return True
+
+            return False
+
+        # Home
+        if event.key() == Qt.Key.Key_Home:
+            cursor = terminal.textCursor()
+
+            cursor.setPosition(
+                self.terminal_input_start
+            )
+
+            terminal.setTextCursor(cursor)
+
+            return True
+
+        return False
+
+    # --------------------------------------------------
+    # Event filter
+    # --------------------------------------------------
+
+    def eventFilter(self, watched, event):
+        if event.type() == (
+            QEvent.Type.KeyPress
+        ):
+            if watched == self.window.Console:
+                if self.handle_console_key(
+                    event
+                ):
+                    return True
+
+            if watched == self.window.Terminal:
+                if self.handle_terminal_key(
+                    event
+                ):
+                    return True
+
+        return super().eventFilter(
+            watched,
+            event,
+        )
+
+    # --------------------------------------------------
+    # Terminal process finished
+    # --------------------------------------------------
+
+    def terminal_finished(
+        self,
+        exit_code,
+        exit_status,
+    ):
+        if exit_status == (
+            QProcess.ExitStatus.NormalExit
+        ):
+            self.write_terminal_output(
+                f"\nTerminal process exited "
+                f"with code {exit_code}.\n"
+            )
+        else:
+            self.write_terminal_output(
+                "\nTerminal process crashed.\n"
+            )
+
+        process = self.terminal_process
+
+        self.terminal_process = None
+
+        if process is not None:
+            process.deleteLater()
+
+    # --------------------------------------------------
+    # Terminal process errors
+    # --------------------------------------------------
+
+    def terminal_error(self, error):
+        if self.terminal_process is None:
+            return
+
+        if error == (
+            QProcess.ProcessError.FailedToStart
+        ):
+            self.write_terminal_output(
+                "\nFailed to start terminal: "
+                f"{self.terminal_process.errorString()}\n"
             )
 
     # --------------------------------------------------
@@ -315,6 +736,7 @@ class ProjectEditor(QObject):
         )
 
         console.setTextCursor(cursor)
+
         console.insertPlainText(text)
 
         cursor.movePosition(
@@ -322,6 +744,10 @@ class ProjectEditor(QObject):
         )
 
         console.setTextCursor(cursor)
+
+        self.input_start = (
+            len(console.toPlainText())
+        )
 
     # --------------------------------------------------
     # Problems
@@ -368,6 +794,7 @@ class ProjectEditor(QObject):
         )
 
         problems.setTextCursor(cursor)
+
         problems.insertPlainText(text)
 
         cursor.movePosition(
@@ -381,16 +808,7 @@ class ProjectEditor(QObject):
         )
 
     # --------------------------------------------------
-    # Terminal
-    # --------------------------------------------------
-
-    def write_terminal(self, message):
-        self.window.Terminal.appendPlainText(
-            message.rstrip("\n")
-        )
-
-    # --------------------------------------------------
-    # Stop
+    # Stop Python process
     # --------------------------------------------------
 
     def stop_process(self):
@@ -404,18 +822,21 @@ class ProjectEditor(QObject):
 
         self.process.kill()
 
-        self.write_terminal(
+        self.write_terminal_output(
             "Process stopped."
         )
 
     # --------------------------------------------------
-    # Cleanup
+    # Cleanup Python process
     # --------------------------------------------------
 
     def cleanup_process(self):
         if self.process is not None:
-            self.process.deleteLater()
+            process = self.process
+
             self.process = None
+
+            process.deleteLater()
 
         if self.temp_file is not None:
             try:
@@ -429,6 +850,25 @@ class ProjectEditor(QObject):
                 pass
 
             self.temp_file = None
+
+    # --------------------------------------------------
+    # Close terminal
+    # --------------------------------------------------
+
+    def close_terminal(self):
+        if self.terminal_process is None:
+            return
+
+        if self.terminal_process.state() != (
+            QProcess.ProcessState.NotRunning
+        ):
+            self.terminal_process.kill()
+
+        process = self.terminal_process
+
+        self.terminal_process = None
+
+        process.deleteLater()
 
     # --------------------------------------------------
     # Window

@@ -12,6 +12,7 @@
     <Name>PyForge</Name>
     <RootNamespace>PyForge</RootNamespace>
     <InterpreterId>MSBuild|env|$(MSBuildProjectFullPath)</InterpreterId>
+    <IsWindowsApplication>False</IsWindowsApplication>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)' == 'Debug' ">
     <DebugSymbols>true</DebugSymbols>
@@ -22,21 +23,27 @@
     <EnableUnmanagedDebugging>false</EnableUnmanagedDebugging>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="Interpreter_Manager.py">
+      <SubType>Code</SubType>
+    </Compile>
     <Compile Include="python_parser.py" />
     <Compile Include="Project_Editor.py">
       <SubType>Code</SubType>
     </Compile>
     <Compile Include="PyForge.py" />
     <Compile Include="python_code_editor.py" />
+    <Compile Include="Script_editor.py">
+      <SubType>Code</SubType>
+    </Compile>
   </ItemGroup>
   <ItemGroup>
     <Content Include="dark.qss" />
     <Content Include="ProjectWindow.ui" />
-    <Content Include="Python_interpreter_manager.ui" />
+    <Content Include="Interpreter_Manager.ui" />
     <Content Include="Python_project_creator_dialog.ui" />
     <Content Include="Python_Script_Namer.ui" />
     <Content Include="requirements.txt" />
-    <Content Include="ScriptWindow.ui" />
+    <Content Include="Script_Editor.ui" />
   </ItemGroup>
   <ItemGroup>
     <Interpreter Include="env\">

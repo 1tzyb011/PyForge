@@ -1,32 +1,26 @@
 
 import sys
+from pathlib import Path
 
 from PySide6.QtWidgets import QApplication
-from PySide6.QtCore import QFile
 
-from Project_Editor import ProjectEditor
+from Script_editor import ScriptEditor
+from Interpreter_Manager import InterpreterManager
 
-def load_stylesheet(path):
-    file = QFile(path)
-
-    if not file.open(QFile.OpenModeFlag.ReadOnly):
-        print(f"Failed to open stylesheet: {path}")
-        return ""
-
-    stylesheet = file.readAll().data().decode("utf-8")
-    file.close()
-
-    return stylesheet
 
 def main():
     app = QApplication(sys.argv)
-    stylesheet = load_stylesheet("dark.qss")
-    app.setStyleSheet(stylesheet)
 
-    window = ProjectEditor()
-    window.show()
+    qss_path = Path(__file__).resolve().parent / "dark.qss"
+
+    with open(qss_path, "r", encoding="utf-8") as file:
+        app.setStyleSheet(file.read())
+
+    editor = InterpreterManager()
+    editor.window.show()
 
     sys.exit(app.exec())
+
 
 
 if __name__ == "__main__":
