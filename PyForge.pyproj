@@ -26,6 +26,9 @@
     <Compile Include="Interpreter_Manager.py">
       <SubType>Code</SubType>
     </Compile>
+    <Compile Include="Project_Creator.py">
+      <SubType>Code</SubType>
+    </Compile>
     <Compile Include="python_parser.py" />
     <Compile Include="Project_Editor.py">
       <SubType>Code</SubType>
@@ -41,7 +44,7 @@
     <Content Include="dark.qss" />
     <Content Include="ProjectWindow.ui" />
     <Content Include="Interpreter_Manager.ui" />
-    <Content Include="Python_project_creator_dialog.ui" />
+    <Content Include="Project_Creator.ui" />
     <Content Include="Python_Script_Namer.ui" />
     <Content Include="requirements.txt" />
     <Content Include="Script_Editor.ui" />
@@ -56,6 +59,9 @@
       <PathEnvironmentVariable>PYTHONPATH</PathEnvironmentVariable>
       <Architecture>X64</Architecture>
     </Interpreter>
+  </ItemGroup>
+  <ItemGroup>
+    <Folder Include="UI Files\" />
   </ItemGroup>
   <Import Project="$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v$(VisualStudioVersion)\Python Tools\Microsoft.PythonTools.targets" />
   <!-- Uncomment the CoreCompile target to enable the Build command in

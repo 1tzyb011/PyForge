@@ -870,9 +870,5 @@ class ProjectEditor(QObject):
 
         process.deleteLater()
 
-    # --------------------------------------------------
-    # Window
-    # --------------------------------------------------
-
     def show(self):
         self.window.show()

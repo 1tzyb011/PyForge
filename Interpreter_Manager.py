@@ -104,19 +104,13 @@ class InterpreterManager(QObject):
 
         self.selected_interpreter = None
 
-        # Find Python installations on this computer.
-        self.interpreters = (
-            self.find_interpreters()
-        )
-
-        # Fetch all available Python releases.
-        self.releases = (
-            self.fetch_python_releases()
-        )
-
         # -----------------------------------------------------
         # Installed interpreters
         # -----------------------------------------------------
+
+        self.interpreters = (
+            self.find_interpreters()
+        )
 
         for interpreter in self.interpreters:
             self.add_installed_interpreter(
@@ -127,10 +121,34 @@ class InterpreterManager(QObject):
         # Available Python releases
         # -----------------------------------------------------
 
+        self.releases = self.fetch_python_releases()
+
+        # Group releases by feature version (for example, 3.14).
+        release_groups = {}
+
         for release in self.releases:
-            self.add_release(
-                release
-            )
+            feature_version = release["feature_version"]
+            release_groups.setdefault(feature_version, []).append(release)
+
+        # Show newest Python feature versions first.
+        feature_versions = sorted(
+            release_groups.keys(),
+            key=lambda version: tuple(
+                int(part) for part in version.split(".")
+            ),
+            reverse=True,
+        )
+
+        # Add one heading per feature version, then its releases.
+        for feature_version in feature_versions:
+            self.add_release_category(feature_version)
+
+            for release in release_groups[feature_version]:
+                self.add_release(release)
+
+        # -----------------------------------------------------
+        # Nothing found
+        # -----------------------------------------------------
 
         if (
             not self.interpreters
@@ -139,6 +157,23 @@ class InterpreterManager(QObject):
             self.add_message(
                 "No Python interpreters or releases found."
             )
+
+    
+        
+
+    # =========================================================
+    # RELEASE CATEGORY
+    # =========================================================
+
+    def add_release_category(self, version):
+        label = QLabel(f"Python {version}")
+
+        font = QFont()
+        font.setPointSize(13)
+        font.setBold(True)
+        label.setFont(font)
+
+        self.window.verticalLayout_3.addWidget(label)
 
     # =========================================================
     # INSTALLED INTERPRETERS
@@ -620,10 +655,12 @@ class InterpreterManager(QObject):
             "Download"
         )
 
-        # Download functionality will be
-        # implemented next.
-        download_button.setEnabled(
-            False
+        download_button.clicked.connect(
+            lambda checked=False,
+            info=release:
+            self.download_release(
+                info
+            )
         )
 
         layout.addWidget(
@@ -644,6 +681,16 @@ class InterpreterManager(QObject):
 
         self.window.verticalLayout_3.addWidget(
             card
+        )
+
+    # =========================================================
+    # DOWNLOAD
+    # =========================================================
+
+    def download_release(self, release):
+        print(
+            "Downloading:",
+            release["version"]
         )
 
     # =========================================================

@@ -6,6 +6,7 @@ from PySide6.QtWidgets import QApplication
 
 from Script_editor import ScriptEditor
 from Interpreter_Manager import InterpreterManager
+from Project_Creator import ProjectCreator
 
 
 def main():
@@ -16,7 +17,7 @@ def main():
     with open(qss_path, "r", encoding="utf-8") as file:
         app.setStyleSheet(file.read())
 
-    editor = InterpreterManager()
+    editor = ProjectCreator()
     editor.window.show()
 
     sys.exit(app.exec())
