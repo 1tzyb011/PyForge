@@ -6,6 +6,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from Interpreter_Manager import InterpreterManager
+
 from PySide6.QtCore import QFile, QObject
 from PySide6.QtWidgets import (
     QApplication,
@@ -212,11 +214,29 @@ class ProjectCreator(QObject):
             )
 
     def manage_environment(self):
-        QMessageBox.information(
-            self.window,
-            "Interpreter Manager",
-            "Interpreter management will be added in a future update.",
-        )
+        manager = InterpreterManager()
+
+        if manager.window.exec():
+            interpreter = manager.get_selected_interpreter()
+
+            if interpreter:
+                combo = self.window.InterpreterComboBox
+                path = interpreter["path"]
+
+                # Refresh the list so the selected interpreter is available.
+                self.populate_interpreters()
+
+                for index in range(combo.count()):
+                    if combo.itemData(index) == path:
+                        combo.setCurrentIndex(index)
+                        break
+                else:
+                    # Include interpreters selected manually by the user.
+                    combo.addItem(
+                        f"Python {interpreter['version_text']} ({path})",
+                        path,
+                    )
+                    combo.setCurrentIndex(combo.count() - 1)
 
     def create_project(self):
         project_name = self.project_name_edit.text().strip()
