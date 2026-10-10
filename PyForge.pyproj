@@ -23,6 +23,7 @@
     <EnableUnmanagedDebugging>false</EnableUnmanagedDebugging>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="Core\project_builder.py" />
     <Compile Include="Interpreter_Manager.py">
       <SubType>Code</SubType>
     </Compile>
@@ -61,7 +62,7 @@
     </Interpreter>
   </ItemGroup>
   <ItemGroup>
-    <Folder Include="UI Files\" />
+    <Folder Include="Core\" />
   </ItemGroup>
   <Import Project="$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v$(VisualStudioVersion)\Python Tools\Microsoft.PythonTools.targets" />
   <!-- Uncomment the CoreCompile target to enable the Build command in
