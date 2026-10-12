@@ -1,1097 +1,349 @@
-
 import os
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import (
-    QObject,
-    QProcess,
-    QEvent,
-    Qt,
-)
+from PySide6.QtCore import QFile, QObject, QEvent, QProcess, Qt
 from PySide6.QtWidgets import (
-    QApplication,
-    QFileDialog,
+    QApplication, QFileDialog, QInputDialog, QMessageBox, QPlainTextEdit,
 )
 from PySide6.QtUiTools import QUiLoader
 
 from python_code_editor import PythonCodeEditor
 from python_parser import PythonParser
 
+APP_DIR = Path(__file__).resolve().parent
+
 
 class ScriptEditor(QObject):
-    def __init__(self):
+    """Single-file editor for scripts opened outside a project."""
+
+    def __init__(self, file_path=None):
         super().__init__()
-
-        # =========================================================
-        # Load UI
-        # =========================================================
-
-        loader = QUiLoader()
-        loader.registerCustomWidget(PythonCodeEditor)
-
-        ui_path = (
-            Path(__file__).resolve().parent
-            / "Script_Editor.ui"
-        )
-
-        self.window = loader.load(str(ui_path))
-
+        ui_path = APP_DIR / "Script_editor.ui"
+        ui_file = QFile(str(ui_path))
+        if not ui_file.open(QFile.OpenModeFlag.ReadOnly):
+            raise RuntimeError(f"Could not open UI file: {ui_path}")
+        try:
+            loader = QUiLoader()
+            loader.registerCustomWidget(PythonCodeEditor)
+            self.window = loader.load(ui_file)
+        finally:
+            ui_file.close()
         if self.window is None:
-            raise RuntimeError(
-                "Failed to load Script_Editor.ui"
-            )
+            raise RuntimeError("Could not load Script_Editor.ui")
 
-        # =========================================================
-        # Widgets
-        # =========================================================
-
-        self.editor = self.window.findChild(
-            PythonCodeEditor,
-            "CodeEditor"
-        )
-
-        self.console = self.window.findChild(
-            type(self.window.Console),
-            "Console"
-        )
-
-        self.terminal = self.window.findChild(
-            type(self.window.Terminal),
-            "Terminal"
-        )
-
-        self.problems = self.window.findChild(
-            type(self.window.problems),
-            "problems"
-        )
-
-        if self.editor is None:
-            raise RuntimeError(
-                "Could not find CodeEditor in Script_Editor.ui"
-            )
-
-        if self.console is None:
-            raise RuntimeError(
-                "Could not find Console in Script_Editor.ui"
-            )
-
-        if self.terminal is None:
-            raise RuntimeError(
-                "Could not find Terminal in Script_Editor.ui"
-            )
-
-        if self.problems is None:
-            raise RuntimeError(
-                "Could not find problems in Script_Editor.ui"
-            )
-
-        # =========================================================
-        # State
-        # =========================================================
-
-        # Currently opened Python file.
-        self.current_file = None
-
-        # Process running the user's Python script.
-        self.process = None
-
-        # Persistent shell used by the Terminal.
-        self.terminal_process = None
-
-        # ---------------------------------------------------------
-        # Console input boundary
-        # ---------------------------------------------------------
-
-        # Everything before this position is program output.
-        self.input_start = 0
-
-        # ---------------------------------------------------------
-        # Terminal input boundary
-        # ---------------------------------------------------------
-
-        # Everything before this position is shell output.
-        self.terminal_input_start = 0
-
-        # =========================================================
-        # Parser
-        # =========================================================
-
+        self.editor = self.window.findChild(PythonCodeEditor, "CodeEditor")
+        self.console = self.window.findChild(QPlainTextEdit, "Console")
+        self.terminal = self.window.findChild(QPlainTextEdit, "Terminal")
+        self.problems = self.window.findChild(QPlainTextEdit, "problems")
         self.parser = PythonParser()
+        self.current_file = None
+        self.standalone_editors = []  # child standalone windows launched from this one
+        self.process = None
+        self.terminal_process = None
+        self.input_start = 0
+        self.terminal_input_start = 0
+        if not all((self.editor, self.console, self.terminal, self.problems)):
+            raise RuntimeError("Script_Editor.ui is missing CodeEditor, Console, Terminal, or problems widgets")
 
-        # =========================================================
-        # Menu actions
-        # =========================================================
-
-        self.window.actionSave.triggered.connect(
-            self.save_file
-        )
-
-        self.window.actionSave_As.triggered.connect(
-            self.save_as
-        )
-
-        self.window.actionOpen.triggered.connect(
-            self.open_file
-        )
-
-        self.window.actionRun.triggered.connect(
-            self.run_script
-        )
-
-        self.window.actionStop.triggered.connect(
-            self.stop_script
-        )
-
-        # =========================================================
-        # Editor
-        # =========================================================
-
-        self.editor.document().modificationChanged.connect(
-            self.document_modified
-        )
-
-        # =========================================================
-        # Console
-        # =========================================================
-
+        self.window.actionSave.triggered.connect(self.save_file)
+        self.window.actionSave_As.triggered.connect(self.save_as)
+        self.window.actionNewPS.triggered.connect(self.new_python_script)
+        self.window.actionPython_Script.triggered.connect(self.open_file_dialog)
+        self.window.actionPython_Project.triggered.connect(self.open_project_dialog)
+        self.window.actionRun.triggered.connect(self.run_script)
+        self.window.actionStop.triggered.connect(self.stop_script)
+        self.window.actionUndo.triggered.connect(self.editor.undo)
+        self.window.actionRedo.triggered.connect(self.editor.redo)
+        self.editor.document().modificationChanged.connect(lambda _modified: self.update_title())
         self.console.installEventFilter(self)
-
-        # =========================================================
-        # Terminal
-        # =========================================================
-
         self.terminal.installEventFilter(self)
+        self._start_terminal()
 
-        # Start the shell.
-        self.start_terminal()
-
-        self.update_window_title()
-
-    # =============================================================
-    # Window
-    # =============================================================
-
-    def update_window_title(self):
-        if self.current_file:
-            filename = Path(
-                self.current_file
-            ).name
+        if file_path:
+            self.open_file(file_path)
         else:
-            filename = "Untitled"
+            self.update_title()
 
+    def update_title(self):
+        name = self.current_file.name if self.current_file else "Untitled"
         if self.editor.document().isModified():
-            filename += "*"
+            name += " *"
+        self.window.setWindowTitle(f"{name} - Script Editor")
 
-        self.window.setWindowTitle(
-            f"{filename} - Script Editor"
+    def new_python_script(self):
+        """Create a standalone .py file at a chosen location and open it in a new window."""
+        name, accepted = QInputDialog.getText(
+            self.window,
+            "New Python Script",
+            "Script filename (e.g. script.py):",
         )
+        if not accepted or not name.strip():
+            return
 
-    def document_modified(self, modified):
-        self.update_window_title()
+        name = name.strip()
+        if not name.lower().endswith(".py"):
+            name += ".py"
+        if Path(name).name != name or name in {".", "..", ".py"}:
+            QMessageBox.warning(
+                self.window,
+                "Invalid Filename",
+                "Enter a filename only, not a folder path.",
+            )
+            return
 
-    # =============================================================
-    # Save
-    # =============================================================
+        folder = QFileDialog.getExistingDirectory(
+            self.window,
+            "Choose Where to Create the Python Script",
+            str(Path.home()),
+            QFileDialog.Option.ShowDirsOnly,
+        )
+        if not folder:
+            return
+
+        path = (Path(folder).expanduser() / name).resolve()
+        if path.exists():
+            answer = QMessageBox.question(
+                self.window,
+                "File Already Exists",
+                f"{path} already exists. Open it in a new Script Editor window?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+        else:
+            try:
+                path.touch(exist_ok=False)
+            except OSError as error:
+                QMessageBox.critical(self.window, "Create Failed", str(error))
+                return
+
+        try:
+            editor = ScriptEditor(file_path=path)
+            self.standalone_editors.append(editor)
+            editor.show()
+        except Exception as error:
+            QMessageBox.critical(
+                self.window,
+                "Script Editor Failed to Open",
+                f"The script is at:\n{path}\n\nBut the editor could not open it:\n{error}",
+            )
+
+    def open_file_dialog(self):
+        path, _ = QFileDialog.getOpenFileName(self.window, "Open Python Script", str(Path.home()), "Python Files (*.py);;All Files (*)")
+        if path:
+            self.open_file(path)
+
+    def open_file(self, path):
+        target = Path(path).expanduser().resolve()
+        try:
+            source = target.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as error:
+            QMessageBox.critical(self.window, "Open Failed", str(error))
+            return False
+        if self.editor.document().isModified():
+            answer = QMessageBox.question(
+                self.window, "Unsaved Changes", "Save changes to the current script first?",
+                QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Save,
+            )
+            if answer == QMessageBox.StandardButton.Cancel:
+                return False
+            if answer == QMessageBox.StandardButton.Save and not self.save_file():
+                return False
+        self.current_file = target
+        self.editor.setPlainText(source)
+        self.editor.document().setModified(False)
+        self.console.clear()
+        self.problems.clear()
+        self.input_start = 0
+        self.update_title()
+        return True
 
     def save_file(self):
         if self.current_file is None:
             return self.save_as()
-
         try:
-            Path(self.current_file).write_text(
-                self.editor.toPlainText(),
-                encoding="utf-8"
-            )
-
+            self.current_file.write_text(self.editor.toPlainText(), encoding="utf-8")
             self.editor.document().setModified(False)
-
-            self.update_window_title()
-
+            self.update_title()
+            self.write_terminal(f"Saved {self.current_file}\n")
             return True
-
-        except Exception as error:
-            self.problems.appendPlainText(
-                f"Save error: {error}"
-            )
-
-            self.window.TerminalTabWidget.setCurrentWidget(
-                self.window.ProblemsTab
-            )
-
+        except OSError as error:
+            QMessageBox.critical(self.window, "Save Failed", str(error))
             return False
-
-    # =============================================================
-    # Save As
-    # =============================================================
 
     def save_as(self):
-        default_name = "script.py"
-
-        if self.current_file:
-            default_name = Path(
-                self.current_file
-            ).name
-
-        file_path, _ = QFileDialog.getSaveFileName(
-            self.window,
-            "Save Python Script",
-            default_name,
-            "Python Files (*.py);;All Files (*)"
-        )
-
-        if not file_path:
+        default = str(self.current_file or (Path.home() / "script.py"))
+        path, _ = QFileDialog.getSaveFileName(self.window, "Save Python Script As", default, "Python Files (*.py);;All Files (*)")
+        if not path:
             return False
-
-        if not Path(file_path).suffix:
-            file_path += ".py"
-
-        self.current_file = Path(file_path)
-
+        target = Path(path).expanduser()
+        if not target.suffix:
+            target = target.with_suffix(".py")
+        self.current_file = target.resolve()
         return self.save_file()
 
-    # =============================================================
-    # Open
-    # =============================================================
-
-    def open_file(self):
-        file_path, _ = QFileDialog.getOpenFileName(
-            self.window,
-            "Open Python Script",
-            "",
-            "Python Files (*.py);;All Files (*)"
-        )
-
-        if not file_path:
-            return False
-
+    def open_project_dialog(self):
+        folder = QFileDialog.getExistingDirectory(self.window, "Open Python Project", str(Path.home()))
+        if not folder:
+            return
         try:
-            source = Path(file_path).read_text(
-                encoding="utf-8"
-            )
-
-            self.editor.setPlainText(source)
-
-            self.current_file = Path(file_path)
-
-            self.editor.document().setModified(False)
-
-            self.problems.clear()
-            self.console.clear()
-
-            self.input_start = 0
-
-            self.update_window_title()
-
-            return True
-
+            from Project_Editor import ProjectEditor
+            self.project_editor = ProjectEditor(project_path=folder)
+            self.project_editor.show()
         except Exception as error:
-            self.problems.setPlainText(
-                f"Open error:\n{error}"
-            )
-
-            self.window.TerminalTabWidget.setCurrentWidget(
-                self.window.ProblemsTab
-            )
-
-            return False
-
-    # =============================================================
-    # Parser
-    # =============================================================
-
-    def parse_script(self):
-        self.problems.clear()
-
-        source = self.editor.toPlainText()
-
-        result = self.parser.parse(source)
-
-        if result["success"]:
-            return True
-
-        error = result["error"]
-
-        line = error.get("line")
-        column = error.get("column")
-        message = error.get("message")
-
-        self.problems.appendPlainText(
-            f"SyntaxError: {message}"
-        )
-
-        if line is not None:
-            self.problems.appendPlainText(
-                f"Line: {line}, Column: {column}"
-            )
-
-        if error.get("text"):
-            self.problems.appendPlainText(
-                error["text"].rstrip()
-            )
-
-        self.window.TerminalTabWidget.setCurrentWidget(
-            self.window.ProblemsTab
-        )
-
-        return False
-
-    # =============================================================
-    # Run Script
-    # =============================================================
+            QMessageBox.critical(self.window, "Open Project Failed", str(error))
 
     def run_script(self):
-        # ---------------------------------------------------------
-        # Save first
-        # ---------------------------------------------------------
-
         if not self.save_file():
             return
-
-        # ---------------------------------------------------------
-        # Parse
-        # ---------------------------------------------------------
-
-        if not self.parse_script():
+        result = self.parser.parse(self.editor.toPlainText())
+        if not result.get("success", False):
+            error = result.get("error", {})
+            self.problems.setPlainText(
+                f"Syntax error at line {error.get('line')}, column {error.get('column')}: {error.get('message', 'Invalid syntax')}"
+            )
+            self.window.TerminalTabWidget.setCurrentWidget(self.window.ProblemsTab)
             return
-
-        # ---------------------------------------------------------
-        # Stop previous script
-        # ---------------------------------------------------------
-
-        if self.process is not None:
-
-            if self.process.state() != (
-                QProcess.ProcessState.NotRunning
-            ):
-                self.process.kill()
-                self.process.waitForFinished()
-
-            self.process.deleteLater()
-            self.process = None
-
-        # ---------------------------------------------------------
-        # Reset output
-        # ---------------------------------------------------------
-
+        if self.process and self.process.state() != QProcess.ProcessState.NotRunning:
+            self.process.kill()
         self.console.clear()
         self.problems.clear()
-
         self.input_start = 0
-
-        # =========================================================
-        # Create Python process
-        # =========================================================
-
         self.process = QProcess(self)
-
-        self.process.setProgram(
-            sys.executable
-        )
-
-        # -u gives us unbuffered stdout/stderr,
-        # which makes print() and input() behave much
-        # better inside the IDE.
-        self.process.setArguments([
-            "-u",
-            str(self.current_file)
-        ])
-
-        self.process.setWorkingDirectory(
-            str(Path(self.current_file).parent)
-        )
-
-        self.process.setProcessChannelMode(
-            QProcess.ProcessChannelMode.SeparateChannels
-        )
-
-        # ---------------------------------------------------------
-        # Signals
-        # ---------------------------------------------------------
-
-        self.process.readyReadStandardOutput.connect(
-            self.read_stdout
-        )
-
-        self.process.readyReadStandardError.connect(
-            self.read_stderr
-        )
-
-        self.process.finished.connect(
-            self.process_finished
-        )
-
-        self.process.errorOccurred.connect(
-            self.process_error
-        )
-
-        # ---------------------------------------------------------
-        # Start
-        # ---------------------------------------------------------
-
+        self.process.setProgram(sys.executable)
+        self.process.setArguments(["-u", str(self.current_file)])
+        self.process.setWorkingDirectory(str(self.current_file.parent))
+        self.process.setProcessChannelMode(QProcess.ProcessChannelMode.SeparateChannels)
+        self.process.readyReadStandardOutput.connect(self._read_stdout)
+        self.process.readyReadStandardError.connect(self._read_stderr)
+        self.process.finished.connect(self._process_finished)
+        self.process.errorOccurred.connect(self._process_error)
         self.process.start()
-
-        # Switch to Console automatically.
-        self.window.TerminalTabWidget.setCurrentWidget(
-            self.window.ConsoleTab
-        )
-
-    # =============================================================
-    # Stop Script
-    # =============================================================
+        self.window.TerminalTabWidget.setCurrentWidget(self.window.ConsoleTab)
 
     def stop_script(self):
-        if self.process is None:
-            return
+        if self.process and self.process.state() != QProcess.ProcessState.NotRunning:
+            self.process.kill()
+            self.write_terminal("Python process stopped.\n")
 
-        if self.process.state() == (
-            QProcess.ProcessState.NotRunning
-        ):
-            return
+    def _read_stdout(self):
+        if self.process:
+            text = bytes(self.process.readAllStandardOutput()).decode("utf-8", errors="replace")
+            if text:
+                self._append(self.console, text)
+                self.input_start = len(self.console.toPlainText())
 
-        self.process.kill()
+    def _read_stderr(self):
+        if self.process:
+            text = bytes(self.process.readAllStandardError()).decode("utf-8", errors="replace")
+            if text:
+                self._append(self.problems, text)
+                self.window.TerminalTabWidget.setCurrentWidget(self.window.ProblemsTab)
 
-        self.process.waitForFinished()
-
-        self.write_terminal(
-            "Python process stopped."
-        )
-
-    # =============================================================
-    # Python stdout -> Console
-    # =============================================================
-
-    def read_stdout(self):
-        if self.process is None:
-            return
-
-        data = self.process.readAllStandardOutput()
-
-        text = bytes(data).decode(
-            "utf-8",
-            errors="replace"
-        )
-
-        if not text:
-            return
-
-        self.write_console(text)
-
-        # Program output ends here.
-        self.input_start = len(
-            self.console.toPlainText()
-        )
-
-        self.console.ensureCursorVisible()
-
-    # =============================================================
-    # Python stderr -> Problems
-    # =============================================================
-
-    def read_stderr(self):
-        if self.process is None:
-            return
-
-        data = self.process.readAllStandardError()
-
-        text = bytes(data).decode(
-            "utf-8",
-            errors="replace"
-        )
-
-        if not text:
-            return
-
-        self.write_problem_text(text)
-
-    # =============================================================
-    # Python Process Finished
-    # =============================================================
-
-    def process_finished(
-        self,
-        exit_code,
-        exit_status
-    ):
-        if exit_status == (
-            QProcess.ExitStatus.NormalExit
-        ):
-
-            if exit_code == 0:
-                self.write_terminal_output(
-                    "Python process finished successfully."
-                )
-
-            else:
-                self.write_terminal_output(
-                    f"Python process exited with "
-                    f"code {exit_code}."
-                )
-
-        else:
-            self.write_terminal_output(
-                "Python process crashed."
-            )
-
-        self.input_start = len(
-            self.console.toPlainText()
-        )
-
-        if self.process is not None:
+    def _process_finished(self, code, status):
+        label = "finished" if status == QProcess.ExitStatus.NormalExit else "crashed"
+        self.write_terminal(f"Python process {label} (exit code {code}).\n")
+        if self.process:
             self.process.deleteLater()
             self.process = None
 
-    # =============================================================
-    # Python Process Errors
-    # =============================================================
+    def _process_error(self, _error):
+        if self.process:
+            self._append(self.problems, self.process.errorString() + "\n")
+            self.window.TerminalTabWidget.setCurrentWidget(self.window.ProblemsTab)
 
-    def process_error(self, error):
-        if self.process is None:
-            return
+    @staticmethod
+    def _append(widget, text):
+        cursor = widget.textCursor()
+        cursor.movePosition(cursor.MoveOperation.End)
+        widget.setTextCursor(cursor)
+        widget.insertPlainText(text)
+        widget.ensureCursorVisible()
 
-        if error == (
-            QProcess.ProcessError.FailedToStart
-        ):
-            message = self.process.errorString()
+    def write_terminal(self, text):
+        self._append(self.terminal, text)
+        self.terminal_input_start = len(self.terminal.toPlainText())
 
-            self.write_problem_text(
-                message
-            )
-
-            self.write_terminal(
-                "Failed to start Python process."
-            )
-
-    # =============================================================
-    # Console Output
-    # =============================================================
-
-    def write_console(self, text):
-        cursor = self.console.textCursor()
-
-        cursor.movePosition(
-            cursor.MoveOperation.End
-        )
-
-        self.console.setTextCursor(cursor)
-
-        self.console.insertPlainText(text)
-
-        cursor.movePosition(
-            cursor.MoveOperation.End
-        )
-
-        self.console.setTextCursor(cursor)
-
-    # =============================================================
-    # Console Input
-    # =============================================================
-
-    def send_console_input(self):
-        if self.process is None:
-            return
-
-        if self.process.state() != (
-            QProcess.ProcessState.Running
-        ):
-            return
-
-        # Always send from the end.
-        cursor = self.console.textCursor()
-
-        cursor.movePosition(
-            cursor.MoveOperation.End
-        )
-
-        self.console.setTextCursor(cursor)
-
-        document = self.console.toPlainText()
-
-        # Only text typed AFTER program output.
-        user_input = document[
-            self.input_start:
-        ]
-
-        self.process.write(
-            (user_input + "\n").encode(
-                "utf-8"
-            )
-        )
-
-        # Show the submitted newline.
-        self.console.insertPlainText(
-            "\n"
-        )
-
-        self.input_start = len(
-            self.console.toPlainText()
-        )
-
-        self.console.ensureCursorVisible()
-
-    # =============================================================
-    # Console Event Filter
-    # =============================================================
-
-    def handle_console_key(self, event):
-        key = event.key()
-
-        cursor = self.console.textCursor()
-
-        # ---------------------------------------------------------
-        # Enter
-        # ---------------------------------------------------------
-
-        if key in (
-            Qt.Key.Key_Return,
-            Qt.Key.Key_Enter,
-        ):
-            self.send_console_input()
-            return True
-
-        # ---------------------------------------------------------
-        # Backspace
-        # ---------------------------------------------------------
-
-        if key == Qt.Key.Key_Backspace:
-
-            if cursor.position() <= self.input_start:
-                return True
-
-        # ---------------------------------------------------------
-        # Left
-        # ---------------------------------------------------------
-
-        if key == Qt.Key.Key_Left:
-
-            if cursor.position() <= self.input_start:
-                return True
-
-        # ---------------------------------------------------------
-        # Home
-        # ---------------------------------------------------------
-
-        if key == Qt.Key.Key_Home:
-
-            cursor.setPosition(
-                self.input_start
-            )
-
-            self.console.setTextCursor(
-                cursor
-            )
-
-            return True
-
-        # ---------------------------------------------------------
-        # Delete
-        # ---------------------------------------------------------
-
-        if key == Qt.Key.Key_Delete:
-
-            if cursor.position() < self.input_start:
-                return True
-
-        return False
-
-    # =============================================================
-    # Terminal
-    # =============================================================
-
-    def start_terminal(self):
-        """
-        Start a persistent shell for the IDE Terminal.
-        """
-
-        if self.terminal_process is not None:
-            return
-
+    def _start_terminal(self):
         self.terminal.clear()
-
         self.terminal_process = QProcess(self)
-
-        # ---------------------------------------------------------
-        # Select shell
-        # ---------------------------------------------------------
-
         if os.name == "nt":
-
-            self.terminal_process.setProgram(
-                os.environ.get(
-                    "COMSPEC",
-                    "cmd.exe"
-                )
-            )
-
-            self.terminal_process.setArguments([
-                "/Q"
-            ])
-
+            self.terminal_process.setProgram(os.environ.get("COMSPEC", "cmd.exe"))
+            self.terminal_process.setArguments(["/Q"])
         else:
-
-            shell = os.environ.get(
-                "SHELL",
-                "/bin/bash"
-            )
-
-            self.terminal_process.setProgram(
-                shell
-            )
-
-        self.terminal_process.setWorkingDirectory(
-            str(Path.home())
-        )
-
-        self.terminal_process.setProcessChannelMode(
-            QProcess.ProcessChannelMode.SeparateChannels
-        )
-
-        # ---------------------------------------------------------
-        # Signals
-        # ---------------------------------------------------------
-
-        self.terminal_process.readyReadStandardOutput.connect(
-            self.read_terminal_stdout
-        )
-
-        self.terminal_process.readyReadStandardError.connect(
-            self.read_terminal_stderr
-        )
-
-        self.terminal_process.finished.connect(
-            self.terminal_finished
-        )
-
-        self.terminal_process.errorOccurred.connect(
-            self.terminal_error
-        )
-
+            self.terminal_process.setProgram(os.environ.get("SHELL", "/bin/bash"))
+            self.terminal_process.setArguments(["-i"])
+        self.terminal_process.setWorkingDirectory(str(self.current_file.parent if self.current_file else Path.home()))
+        self.terminal_process.setProcessChannelMode(QProcess.ProcessChannelMode.SeparateChannels)
+        self.terminal_process.readyReadStandardOutput.connect(self._read_terminal)
+        self.terminal_process.readyReadStandardError.connect(self._read_terminal)
         self.terminal_process.start()
 
-    # =============================================================
-    # Terminal stdout
-    # =============================================================
-
-    def read_terminal_stdout(self):
-        if self.terminal_process is None:
-            return
-
-        data = (
-            self.terminal_process
-            .readAllStandardOutput()
-        )
-
-        text = bytes(data).decode(
-            "utf-8",
-            errors="replace"
-        )
-
-        if not text:
-            return
-
-        self.write_terminal_output(text)
-
-        # Shell output ends here.
-        self.terminal_input_start = len(
-            self.terminal.toPlainText()
-        )
-
-        self.terminal.ensureCursorVisible()
-
-    # =============================================================
-    # Terminal stderr
-    # =============================================================
-
-    def read_terminal_stderr(self):
-        if self.terminal_process is None:
-            return
-
-        data = (
-            self.terminal_process
-            .readAllStandardError()
-        )
-
-        text = bytes(data).decode(
-            "utf-8",
-            errors="replace"
-        )
-
-        if not text:
-            return
-
-        self.write_terminal_output(text)
-
-        self.terminal_input_start = len(
-            self.terminal.toPlainText()
-        )
-
-        self.terminal.ensureCursorVisible()
-    
-    
-    # =============================================================
-    # Terminal Process Finished
-    # =============================================================
-
-    def terminal_finished(
-        self,
-        exit_code,
-        exit_status
-    ):
-        if exit_status == (
-            QProcess.ExitStatus.NormalExit
-        ):
-            self.write_terminal_output(
-                f"\nTerminal process exited "
-                f"with code {exit_code}.\n"
-            )
-        else:
-            self.write_terminal_output(
-                "\nTerminal process crashed.\n"
-            )
-
-        self.terminal_process = None
-
-    # =============================================================
-    # Terminal Process Error
-    # =============================================================
-
-    def terminal_error(self, error):
-        if self.terminal_process is None:
-            return
-
-        if error == (
-            QProcess.ProcessError.FailedToStart
-        ):
-            self.write_terminal_output(
-                "\nFailed to start terminal: "
-                f"{self.terminal_process.errorString()}\n"
-            )
-    # =============================================================
-    # Terminal Output
-    # =============================================================
-
-    def write_terminal_output(self, text):
-        cursor = self.terminal.textCursor()
-
-        cursor.movePosition(
-            cursor.MoveOperation.End
-        )
-
-        self.terminal.setTextCursor(cursor)
-
-        self.terminal.insertPlainText(text)
-
-        cursor.movePosition(
-            cursor.MoveOperation.End
-        )
-
-        self.terminal.setTextCursor(cursor)
-
-    # =============================================================
-    # Terminal Input
-    # =============================================================
-
-    def send_terminal_input(self):
-        if self.terminal_process is None:
-            return
-
-        if self.terminal_process.state() != (
-            QProcess.ProcessState.Running
-        ):
-            return
-
-        # Always operate at the end.
-        cursor = self.terminal.textCursor()
-
-        cursor.movePosition(
-            cursor.MoveOperation.End
-        )
-
-        self.terminal.setTextCursor(cursor)
-
-        document = self.terminal.toPlainText()
-
-        # Only take text entered after shell output.
-        command = document[
-            self.terminal_input_start:
-        ]
-
-        self.terminal_process.write(
-            (command + "\n").encode(
-                "utf-8"
-            )
-        )
-
-        # Visually submit the command.
-        self.terminal.insertPlainText(
-            "\n"
-        )
-
-        self.terminal_input_start = len(
-            self.terminal.toPlainText()
-        )
-
-        self.terminal.ensureCursorVisible()
-
-    # =============================================================
-    # Terminal Event Filter
-    # =============================================================
-
-    def handle_terminal_key(self, event):
-        key = event.key()
-
-        cursor = self.terminal.textCursor()
-
-        # ---------------------------------------------------------
-        # Enter
-        # ---------------------------------------------------------
-
-        if key in (
-            Qt.Key.Key_Return,
-            Qt.Key.Key_Enter,
-        ):
-            self.send_terminal_input()
-            return True
-
-        # ---------------------------------------------------------
-        # Backspace
-        # ---------------------------------------------------------
-
-        if key == Qt.Key.Key_Backspace:
-
-            if cursor.position() <= (
-                self.terminal_input_start
-            ):
-                return True
-
-        # ---------------------------------------------------------
-        # Left
-        # ---------------------------------------------------------
-
-        if key == Qt.Key.Key_Left:
-
-            if cursor.position() <= (
-                self.terminal_input_start
-            ):
-                return True
-
-        # ---------------------------------------------------------
-        # Home
-        # ---------------------------------------------------------
-
-        if key == Qt.Key.Key_Home:
-
-            cursor.setPosition(
-                self.terminal_input_start
-            )
-
-            self.terminal.setTextCursor(
-                cursor
-            )
-
-            return True
-
-        # ---------------------------------------------------------
-        # Delete
-        # ---------------------------------------------------------
-
-        if key == Qt.Key.Key_Delete:
-
-            if cursor.position() < (
-                self.terminal_input_start
-            ):
-                return True
-
-        return False
-
-    # =============================================================
-    # Unified Event Filter
-    # =============================================================
+    def _read_terminal(self):
+        if self.terminal_process:
+            data = self.terminal_process.readAllStandardOutput() + self.terminal_process.readAllStandardError()
+            text = bytes(data).decode("utf-8", errors="replace")
+            if text:
+                self.write_terminal(text)
 
     def eventFilter(self, watched, event):
-
         if event.type() == QEvent.Type.KeyPress:
-
-            # Console
             if watched is self.console:
-
-                if self.handle_console_key(event):
+                if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                    self._send_console_input()
                     return True
-
-            # Terminal
+                if event.key() == Qt.Key.Key_Backspace and self.console.textCursor().position() <= self.input_start:
+                    return True
+                if event.key() == Qt.Key.Key_Home:
+                    cursor = self.console.textCursor(); cursor.setPosition(self.input_start); self.console.setTextCursor(cursor)
+                    return True
             if watched is self.terminal:
-
-                if self.handle_terminal_key(event):
+                if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                    self._send_terminal_input()
                     return True
+                if event.key() == Qt.Key.Key_Backspace and self.terminal.textCursor().position() <= self.terminal_input_start:
+                    return True
+                if event.key() == Qt.Key.Key_Home:
+                    cursor = self.terminal.textCursor(); cursor.setPosition(self.terminal_input_start); self.terminal.setTextCursor(cursor)
+                    return True
+        return super().eventFilter(watched, event)
 
-        return super().eventFilter(
-            watched,
-            event
-        )
-
-    # =============================================================
-    # Problems
-    # =============================================================
-
-    def clear_problems(self):
-        self.problems.clear()
-
-    def write_problem_text(self, text):
-        cursor = self.problems.textCursor()
-
-        cursor.movePosition(
-            cursor.MoveOperation.End
-        )
-
-        self.problems.setTextCursor(cursor)
-
-        self.problems.insertPlainText(text)
-
-        cursor.movePosition(
-            cursor.MoveOperation.End
-        )
-
-        self.problems.setTextCursor(cursor)
-
-        self.window.TerminalTabWidget.setCurrentWidget(
-            self.window.ProblemsTab
-        )
-
-    # =============================================================
-    # Stop / Cleanup
-    # =============================================================
-
-    def close_terminal(self):
-        if self.terminal_process is None:
+    def _send_console_input(self):
+        if not self.process or self.process.state() != QProcess.ProcessState.Running:
             return
+        cursor = self.console.textCursor(); cursor.movePosition(cursor.MoveOperation.End); self.console.setTextCursor(cursor)
+        text = self.console.toPlainText()[self.input_start:]
+        self.console.insertPlainText("\n")
+        self.process.write((text + "\n").encode("utf-8"))
+        self.input_start = len(self.console.toPlainText())
 
-        if self.terminal_process.state() != (
-            QProcess.ProcessState.NotRunning
-        ):
-            self.terminal_process.kill()
-            self.terminal_process.waitForFinished()
-
-        self.terminal_process.deleteLater()
-        self.terminal_process = None
-
-    # =============================================================
-    # Window
-    # =============================================================
+    def _send_terminal_input(self):
+        if not self.terminal_process or self.terminal_process.state() != QProcess.ProcessState.Running:
+            return
+        cursor = self.terminal.textCursor(); cursor.movePosition(cursor.MoveOperation.End); self.terminal.setTextCursor(cursor)
+        command = self.terminal.toPlainText()[self.terminal_input_start:]
+        self.terminal.insertPlainText("\n")
+        self.terminal_process.write((command + "\n").encode("utf-8"))
+        self.terminal_input_start = len(self.terminal.toPlainText())
 
     def show(self):
         self.window.show()
 
+    def closeEvent(self, event):
+        if self.process and self.process.state() != QProcess.ProcessState.NotRunning:
+            self.process.kill()
+        if self.terminal_process and self.terminal_process.state() != QProcess.ProcessState.NotRunning:
+            self.terminal_process.kill()
+        event.accept()
 
-# =================================================================
-# Standalone Launch
-# =================================================================
 
 def main():
     app = QApplication(sys.argv)
-
     editor = ScriptEditor()
-    editor.window.show()
-
+    editor.show()
     sys.exit(app.exec())
 
 

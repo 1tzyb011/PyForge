@@ -61,7 +61,7 @@
      <x>0</x>
      <y>0</y>
      <width>712</width>
-     <height>21</height>
+     <height>23</height>
     </rect>
    </property>
    <widget class="QMenu" name="menuFile">
@@ -76,11 +76,18 @@
      <addaction name="actionNew_PA"/>
      <addaction name="actionNewPS"/>
     </widget>
+    <widget class="QMenu" name="menuOpen">
+     <property name="title">
+      <string>Open</string>
+     </property>
+     <addaction name="actionPython_Script"/>
+     <addaction name="actionPython_Projet"/>
+    </widget>
     <addaction name="actionSave"/>
     <addaction name="actionSave_As"/>
     <addaction name="separator"/>
     <addaction name="menuNew"/>
-    <addaction name="actionOpen"/>
+    <addaction name="menuOpen"/>
    </widget>
    <widget class="QMenu" name="menuEdit">
     <property name="title">
@@ -170,7 +177,7 @@
            <item>
             <widget class="QPlainTextEdit" name="Terminal">
              <property name="lineWrapMode">
-              <enum>QPlainTextEdit::NoWrap</enum>
+              <enum>QPlainTextEdit::LineWrapMode::NoWrap</enum>
              </property>
              <property name="readOnly">
               <bool>false</bool>
@@ -194,7 +201,7 @@
            <item>
             <widget class="QPlainTextEdit" name="Console">
              <property name="lineWrapMode">
-              <enum>QPlainTextEdit::NoWrap</enum>
+              <enum>QPlainTextEdit::LineWrapMode::NoWrap</enum>
              </property>
              <property name="readOnly">
               <bool>false</bool>
@@ -215,7 +222,7 @@
            <item>
             <widget class="QPlainTextEdit" name="problems">
              <property name="lineWrapMode">
-              <enum>QPlainTextEdit::NoWrap</enum>
+              <enum>QPlainTextEdit::LineWrapMode::NoWrap</enum>
              </property>
              <property name="readOnly">
               <bool>true</bool>
@@ -259,11 +266,6 @@
     <string>Save As..</string>
    </property>
   </action>
-  <action name="actionOpen">
-   <property name="text">
-    <string>Open</string>
-   </property>
-  </action>
   <action name="actionNew_PA">
    <property name="text">
     <string>New Python Application</string>
@@ -287,6 +289,16 @@
   <action name="actionNewPS">
    <property name="text">
     <string>New Python Script</string>
+   </property>
+  </action>
+  <action name="actionPython_Script">
+   <property name="text">
+    <string>Python Script</string>
+   </property>
+  </action>
+  <action name="actionPython_Projet">
+   <property name="text">
+    <string>Python Projet</string>
    </property>
   </action>
  </widget>
