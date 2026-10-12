@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 from Interpreter_Manager import InterpreterManager
+from Project_Editor import ProjectEditor
 
 from PySide6.QtCore import QFile, QObject
 from PySide6.QtWidgets import (
@@ -398,6 +399,14 @@ class ProjectCreator(QObject):
                 "Project Created",
                 "\n".join(lines),
             )
+                # Open the newly created project.
+        self.project_editor = ProjectEditor(
+            project_path=result["destination"]
+        )
+        self.project_editor.show()
+
+        # Close the creator after opening the editor.
+        self.window.close()    
 
     def show(self):
         self.window.show()

@@ -9,6 +9,17 @@ from PySide6.QtCore import (
     QProcess,
     QEvent,
     Qt,
+    QDir
+)
+from pathlib import Path
+
+from PySide6.QtWidgets import (
+    QFileDialog,
+    QFileSystemModel,
+    QMessageBox,
+    QInputDialog,
+    QWidget,
+    QVBoxLayout,
 )
 from PySide6.QtUiTools import QUiLoader
 
@@ -17,11 +28,19 @@ from python_parser import PythonParser
 
 
 class ProjectEditor(QObject):
-    def __init__(self):
+    def __init__(self, project_path=None):
         super().__init__()
 
+        self.project_root = Path(
+            project_path or Path.cwd()
+        ).expanduser().resolve()
+
+        self.open_files = {}
+        self._closing_tabs = False
+
         self.window = self.load_ui(
-            "ProjectWindow.ui"
+            Path(__file__).resolve().parent
+            / "ProjectWindow.ui"
         )
 
         if self.window is None:
@@ -46,6 +65,9 @@ class ProjectEditor(QObject):
 
         self.connect_actions()
 
+        self.setup_project_tree()
+        self.setup_editor_tabs()
+
         # Console input
         self.window.Console.installEventFilter(
             self
@@ -66,34 +88,21 @@ class ProjectEditor(QObject):
     # UI
     # --------------------------------------------------
 
-    def load_ui(self, path):
-        ui_file = QFile(path)
+        def load_ui(self, path):
+            ui_file = QFile(str(path))
 
-        if not ui_file.open(
-            QFile.OpenModeFlag.ReadOnly
-        ):
-            print(
-                f"Failed to open UI file: {path}"
-            )
-            return None
+            if not ui_file.open(
+                QFile.OpenModeFlag.ReadOnly
+            ):
+                print(f"Failed to open UI file: {path}")
+                return None
 
-        loader = QUiLoader()
-
-        loader.registerCustomWidget(
-            PythonCodeEditor
-        )
-
-        window = loader.load(ui_file)
-
-        ui_file.close()
-
-        if window is None:
-            print(
-                f"Failed to load UI file: {path}"
-            )
-
-        return window
-
+            try:
+                loader = QUiLoader()
+                loader.registerCustomWidget(PythonCodeEditor)
+                return loader.load(ui_file)
+            finally:
+                ui_file.close()
     # --------------------------------------------------
     # Actions
     # --------------------------------------------------
@@ -102,9 +111,30 @@ class ProjectEditor(QObject):
         self.window.actionRun.triggered.connect(
             self.run_current_editor
         )
-
         self.window.actionStop.triggered.connect(
             self.stop_process
+        )
+
+        self.window.actionSave.triggered.connect(
+            self.save_current_file
+        )
+        self.window.actionSave_As.triggered.connect(
+            self.save_file_as
+        )
+        self.window.actionOpen.triggered.connect(
+            self.open_file_dialog
+        )
+        self.window.actionNewPS.triggered.connect(
+            self.new_python_script
+        )
+
+        self.window.actionUndo.triggered.connect(
+            lambda: self.get_current_editor()
+            and self.get_current_editor().undo()
+        )
+        self.window.actionRedo.triggered.connect(
+            lambda: self.get_current_editor()
+            and self.get_current_editor().redo()
         )
 
     # --------------------------------------------------
@@ -144,6 +174,15 @@ class ProjectEditor(QObject):
             )
             return
 
+            if not self.save_current_file():
+                self.write_terminal_output(
+                    "Run cancelled: save the script first."
+                )
+                return
+
+        tab = self.get_current_tab()
+        script_path = Path(tab.property("file_path"))
+
         # Don't allow multiple Python processes
         if self.process is not None:
             if self.process.state() != (
@@ -176,17 +215,45 @@ class ProjectEditor(QObject):
         # --------------------------------------------------
 
         try:
-            temp = tempfile.NamedTemporaryFile(
-                mode="w",
-                suffix=".py",
-                delete=False,
-                encoding="utf-8",
+            self.window.Console.clear()
+            self.input_start = 0
+
+            self.window.TerminalTabWidget.setCurrentWidget(
+                self.window.ConsoleTab
             )
 
-            temp.write(source)
-            temp.close()
+            self.write_terminal_output(
+                f"Running {script_path.name}..."
+            )
 
-            self.temp_file = temp.name
+            self.process = QProcess(self)
+            self.process.setProgram(sys.executable)
+            self.process.setArguments([
+                "-u",
+                str(script_path),
+            ])
+            self.process.setWorkingDirectory(
+                str(self.project_root)
+            )
+
+            self.process.setProcessChannelMode(
+                QProcess.ProcessChannelMode.SeparateChannels
+            )
+
+            self.process.readyReadStandardOutput.connect(
+                self.read_stdout
+            )
+            self.process.readyReadStandardError.connect(
+                self.read_stderr
+            )
+            self.process.finished.connect(
+                self.process_finished
+            )
+            self.process.errorOccurred.connect(
+                self.process_error
+            )
+
+            self.process.start()
 
         except Exception as error:
             self.show_problem({
@@ -872,3 +939,302 @@ class ProjectEditor(QObject):
 
     def show(self):
         self.window.show()
+
+        def setup_project_tree(self):
+            self.file_model = QFileSystemModel(self)
+            self.file_model.setFilter(
+                QDir.Filter.AllEntries
+                | QDir.Filter.NoDotAndDotDot
+            )
+
+            self.file_model.setRootPath(str(self.project_root))
+
+            tree = self.window.treeView
+            tree.setModel(self.file_model)
+            tree.setRootIndex(
+                self.file_model.index(str(self.project_root))
+            )
+
+            # Keep the explorer compact.
+            for column in range(1, 4):
+                tree.hideColumn(column)
+
+            tree.doubleClicked.connect(
+                self.open_tree_item
+            )
+
+    def setup_editor_tabs(self):
+        tabs = self.window.MainEditorTabs
+
+        # Remove the two placeholder tabs from Qt Designer.
+        while tabs.count():
+            widget = tabs.widget(0)
+            tabs.removeTab(0)
+            widget.deleteLater()
+
+        tabs.setTabsClosable(True)
+        tabs.tabCloseRequested.connect(
+            self.close_editor_tab
+        )
+
+    def get_current_editor(self):
+        tab = self.window.MainEditorTabs.currentWidget()
+
+        if tab is None:
+            return None
+
+        return tab.findChild(PythonCodeEditor)
+
+    def get_current_tab(self):
+        return self.window.MainEditorTabs.currentWidget()
+
+    def create_editor_tab(self, file_path=None, content=""):
+        tabs = self.window.MainEditorTabs
+
+        path = Path(file_path).resolve() if file_path else None
+
+        # Don't open the same file in multiple tabs.
+        if path is not None:
+            existing = self.open_files.get(str(path))
+
+            if existing is not None:
+                index = tabs.indexOf(existing)
+                if index >= 0:
+                    tabs.setCurrentIndex(index)
+                    return existing
+
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        editor = PythonCodeEditor()
+        editor.setPlainText(content)
+        layout.addWidget(editor)
+
+        tab.setProperty(
+            "file_path",
+            str(path) if path else ""
+        )
+        tab.setProperty("dirty", False)
+
+        title = path.name if path else "Untitled.py"
+        index = tabs.addTab(tab, title)
+        tabs.setCurrentIndex(index)
+
+        if path is not None:
+            self.open_files[str(path)] = tab
+
+        editor.textChanged.connect(
+            lambda tab=tab: self.mark_tab_dirty(tab)
+        )
+
+        return tab
+
+    def mark_tab_dirty(self, tab):
+        if tab is None:
+            return
+
+        if not tab.property("dirty"):
+            tab.setProperty("dirty", True)
+
+            index = self.window.MainEditorTabs.indexOf(tab)
+            if index >= 0:
+                title = self.window.MainEditorTabs.tabText(index)
+                if not title.endswith("*"):
+                    self.window.MainEditorTabs.setTabText(
+                        index, title + "*"
+                    )
+
+    def update_tab_saved(self, tab, path):
+        old_path = tab.property("file_path")
+
+        if old_path:
+            self.open_files.pop(old_path, None)
+
+        path = Path(path).resolve()
+        tab.setProperty("file_path", str(path))
+        tab.setProperty("dirty", False)
+
+        self.open_files[str(path)] = tab
+
+        index = self.window.MainEditorTabs.indexOf(tab)
+        if index >= 0:
+            self.window.MainEditorTabs.setTabText(
+                index, path.name
+            )
+        def open_tree_item(self, index):
+            path = Path(self.file_model.filePath(index))
+
+            if path.is_file():
+                self.open_file(path)
+
+    def open_file_dialog(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self.window,
+            "Open File",
+            str(self.project_root),
+            "All Files (*);;Python Files (*.py)"
+        )
+
+        if path:
+            self.open_file(path)
+
+    def open_file(self, file_path):
+        path = Path(file_path).resolve()
+
+        if not path.is_file():
+            return
+
+        try:
+            content = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as error:
+            QMessageBox.critical(
+                self.window,
+                "Open Failed",
+                str(error)
+            )
+            return
+
+        self.create_editor_tab(path, content)
+
+    def save_current_file(self):
+        tab = self.get_current_tab()
+        editor = self.get_current_editor()
+
+        if tab is None or editor is None:
+            return False
+
+        file_path = tab.property("file_path")
+
+        if not file_path:
+            return self.save_file_as()
+
+        try:
+            Path(file_path).write_text(
+                editor.toPlainText(),
+                encoding="utf-8"
+            )
+        except OSError as error:
+            QMessageBox.critical(
+                self.window,
+                "Save Failed",
+                str(error)
+            )
+            return False
+
+        self.update_tab_saved(tab, file_path)
+        return True
+
+    def save_file_as(self):
+        tab = self.get_current_tab()
+        editor = self.get_current_editor()
+
+        if tab is None or editor is None:
+            return False
+
+        path, _ = QFileDialog.getSaveFileName(
+            self.window,
+            "Save File",
+            str(self.project_root / "untitled.py"),
+            "Python Files (*.py);;All Files (*)"
+        )
+
+        if not path:
+            return False
+
+        try:
+            Path(path).write_text(
+                editor.toPlainText(),
+                encoding="utf-8"
+            )
+        except OSError as error:
+            QMessageBox.critical(
+                self.window,
+                "Save Failed",
+                str(error)
+            )
+            return False
+
+        self.update_tab_saved(tab, path)
+        return True
+
+    def new_python_script(self):
+        name, accepted = QInputDialog.getText(
+            self.window,
+            "New Python Script",
+            "Script filename:",
+        )
+
+        if not accepted or not name.strip():
+            return
+
+        name = name.strip()
+
+        if not name.endswith(".py"):
+            name += ".py"
+
+        path = (self.project_root / name).resolve()
+
+        # Don't allow a filename to escape the project directory.
+        if not path.is_relative_to(self.project_root):
+            QMessageBox.warning(
+                self.window,
+                "Invalid Filename",
+                "Create scripts inside the project directory."
+            )
+            return
+
+        if path.exists():
+            QMessageBox.warning(
+                self.window,
+                "File Exists",
+                f"{path.name} already exists."
+            )
+            return
+
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("", encoding="utf-8")
+        except OSError as error:
+            QMessageBox.critical(
+                self.window,
+                "Creation Failed",
+                str(error)
+            )
+            return
+
+        self.file_model.setRootPath(str(self.project_root))
+        self.open_file(path)
+
+    def close_editor_tab(self, index):
+        tabs = self.window.MainEditorTabs
+        tab = tabs.widget(index)
+
+        if tab is None:
+            return
+
+        if tab.property("dirty"):
+            answer = QMessageBox.question(
+                self.window,
+                "Unsaved Changes",
+                f"Save changes to {tabs.tabText(index).rstrip('*')}?",
+                QMessageBox.StandardButton.Save
+                | QMessageBox.StandardButton.Discard
+                | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Save,
+            )
+
+            if answer == QMessageBox.StandardButton.Cancel:
+                return
+
+            if answer == QMessageBox.StandardButton.Save:
+                tabs.setCurrentIndex(index)
+                if not self.save_current_file():
+                    return
+
+        file_path = tab.property("file_path")
+        if file_path:
+            self.open_files.pop(file_path, None)
+
+        tabs.removeTab(index)
+        tab.deleteLater()        
