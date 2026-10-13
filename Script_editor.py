@@ -276,13 +276,13 @@ class ScriptEditor(QObject):
         from Project_Editor import ProjectEditor
         try:
             child = ProjectEditor(project_path)
+            retain_window(child)
         except Exception as error:
             QMessageBox.critical(self.window, "Open Project Failed", str(error))
             return
         if not hasattr(self, "_project_windows"):
             self._project_windows = []
         self._project_windows.append(child)
-        retain_window(child)
         child.window.destroyed.connect(lambda *_args, obj=child: self._forget_project(obj))
         child.show()
 
