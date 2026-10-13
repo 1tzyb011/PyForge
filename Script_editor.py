@@ -10,7 +10,7 @@ from PySide6.QtWidgets import QFileDialog, QMessageBox, QPlainTextEdit, QTabWidg
 from PySide6.QtUiTools import QUiLoader
 
 from python_code_editor import PythonCodeEditor
-from Core.window_registry import retain_window
+from Core.window_registry import retain_window, switch_window
 
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -230,7 +230,8 @@ class ScriptEditor(QObject):
             child.window.destroyed.connect(
                 lambda *_args, obj=child: self._forget_child(obj)
             )
-            child.show()
+            if not switch_window(self, child):
+                return None
             return child
         except Exception as error:
             QMessageBox.critical(
@@ -250,7 +251,8 @@ class ScriptEditor(QObject):
             creator.window.destroyed.connect(
                 lambda *_args, obj=creator: self._forget_child(obj)
             )
-            creator.show()
+            if not switch_window(self, creator):
+                return
         except Exception as error:
             QMessageBox.critical(
                 self.window,
@@ -284,7 +286,8 @@ class ScriptEditor(QObject):
             self._project_windows = []
         self._project_windows.append(child)
         child.window.destroyed.connect(lambda *_args, obj=child: self._forget_project(obj))
-        child.show()
+        if not switch_window(self, child):
+            return
 
     def _forget_project(self, child):
         try:
