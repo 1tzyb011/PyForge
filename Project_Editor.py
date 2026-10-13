@@ -9,7 +9,7 @@ import os
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QFile, QDir, QEvent, QObject, QProcess, Qt
+from PySide6.QtCore import QFile, QDir, QEvent, QObject, QProcess, QSortFilterProxyModel, Qt
 from PySide6.QtWidgets import (
     QFileDialog,
     QFileSystemModel,
@@ -63,6 +63,24 @@ def connect_if_present(window, names, callback):
             connected.append(action)
             seen.add(id(action))
     return connected[0] if connected else None
+
+
+class ProjectTreeFilter(QSortFilterProxyModel):
+    """Hide generated/dependency folders that can overwhelm the project tree."""
+
+    IGNORED_DIRECTORIES = {
+        ".git", ".venv", "venv", "__pycache__", ".pytest_cache",
+        ".mypy_cache", ".ruff_cache", "node_modules", "build", "dist",
+    }
+
+    def filterAcceptsRow(self, source_row, source_parent):
+        model = self.sourceModel()
+        index = model.index(source_row, 0, source_parent)
+        if not index.isValid():
+            return False
+        if model.isDir(index) and model.fileName(index) in self.IGNORED_DIRECTORIES:
+            return False
+        return True
 
 
 class ProjectEditor(QObject):
@@ -139,10 +157,12 @@ class ProjectEditor(QObject):
     def _setup_project_tree(self):
         self.file_model = QFileSystemModel(self)
         self.file_model.setFilter(QDir.Filter.AllEntries | QDir.Filter.NoDotAndDotDot)
-        self.file_model.setRootPath(str(self.project_root))
+        source_root = self.file_model.setRootPath(str(self.project_root))
+        self.tree_filter = ProjectTreeFilter(self)
+        self.tree_filter.setSourceModel(self.file_model)
         tree = self.window.treeView
-        tree.setModel(self.file_model)
-        tree.setRootIndex(self.file_model.index(str(self.project_root)))
+        tree.setModel(self.tree_filter)
+        tree.setRootIndex(self.tree_filter.mapFromSource(source_root))
         for column in range(1, self.file_model.columnCount()):
             tree.hideColumn(column)
         tree.doubleClicked.connect(self._on_tree_double_click)
@@ -225,7 +245,8 @@ class ProjectEditor(QObject):
         self._create_tab(path, content)
 
     def _on_tree_double_click(self, index):
-        path = Path(self.file_model.filePath(index))
+        source_index = self.tree_filter.mapToSource(index)
+        path = Path(self.file_model.filePath(source_index))
         if path.is_file() and path.suffix.lower() == ".py":
             self.open_project_file(path)
 
@@ -235,7 +256,7 @@ class ProjectEditor(QObject):
             "Python Files (*.py);;All Files (*)",
         )
         if path:
-            self._launch_standalone(Path(path))
+            self.open_project_file(path)
 
     def _launch_standalone(self, path=None):
         # Import here to avoid circular imports at module initialization.
@@ -528,7 +549,14 @@ class ProjectEditor(QObject):
         process = QProcess(self)
         self.terminal_process = process
         process.setProgram(shell)
-        process.setArguments(["/Q"] if os.name == "nt" else ["-i"])
+        if os.name == "nt":
+            process.setArguments(["/Q"])
+        elif Path(shell).name == "bash":
+            # Avoid running arbitrary user shell startup files during editor
+            # startup; slow prompts/plugins can make both editor windows look frozen.
+            process.setArguments(["--noprofile", "--norc", "-i"])
+        else:
+            process.setArguments(["-i"])
         process.setWorkingDirectory(str(self.project_root))
         process.setProcessChannelMode(QProcess.ProcessChannelMode.SeparateChannels)
         process.readyReadStandardOutput.connect(self._read_terminal_output)
