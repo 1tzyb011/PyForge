@@ -6,10 +6,11 @@ saving, and running the selected project script.
 
 import ast
 import os
+import shutil
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QFile, QDir, QEvent, QObject, QProcess, QSortFilterProxyModel, QTimer, Qt
+from PySide6.QtCore import QFile, QDir, QEvent, QObject, QProcess, Qt
 from PySide6.QtWidgets import (
     QFileDialog,
     QFileSystemModel,
@@ -20,13 +21,6 @@ from PySide6.QtWidgets import (
 from PySide6.QtUiTools import QUiLoader
 
 from python_code_editor import PythonCodeEditor
-from Core.project_format import (
-    ProjectFormatError,
-    find_project_manifest,
-    load_project_manifest,
-)
-from Core.window_registry import retain_window, switch_window
-
 
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -41,6 +35,7 @@ def load_ui(ui_path: Path):
         window = loader.load(ui_file)
         if window is None:
             raise RuntimeError(f"Qt could not load UI file: {ui_path}")
+
         # QUiLoader widgets are retrieved through findChild by default.
         # Expose named children as attributes for the editor code below.
         for child in window.findChildren(QObject):
@@ -53,100 +48,52 @@ def load_ui(ui_path: Path):
 
 
 def connect_if_present(window, names, callback):
-    """Connect every available QAction alias without connecting one action twice."""
-    connected = []
-    seen = set()
+    """Connect the first matching QAction, supporting both old and new UI names."""
     for name in names:
         action = getattr(window, name, None)
-        if action is not None and id(action) not in seen:
+        if action is not None:
             action.triggered.connect(callback)
-            connected.append(action)
-            seen.add(id(action))
-    return connected[0] if connected else None
-
-
-class ProjectTreeFilter(QSortFilterProxyModel):
-    """Hide generated/dependency folders that can overwhelm the project tree."""
-
-    IGNORED_DIRECTORIES = {
-        ".git", ".venv", "venv", "__pycache__", ".pytest_cache",
-        ".mypy_cache", ".ruff_cache", "node_modules", "build", "dist",
-    }
-
-    def filterAcceptsRow(self, source_row, source_parent):
-        model = self.sourceModel()
-        index = model.index(source_row, 0, source_parent)
-        if not index.isValid():
-            return False
-        if model.isDir(index) and model.fileName(index) in self.IGNORED_DIRECTORIES:
-            return False
-        return True
-
-
-def resolve_project_target(project_path=None):
-    """Resolve a project directory or manifest without touching any window state."""
-    requested_path = Path(project_path or Path.cwd()).expanduser().resolve()
-    if not requested_path.exists():
-        raise FileNotFoundError(f"Project path does not exist: {requested_path}")
-
-    if requested_path.is_file():
-        if requested_path.suffix.lower() != ".forproj" and requested_path.name.lower() != "pyforge.json":
-            raise ValueError("Open a .forproj project file or a legacy pyforge.json manifest.")
-        project_file = requested_path
-        project_config = load_project_manifest(project_file)
-        project_root = requested_path.parent
-    elif requested_path.is_dir():
-        project_root = requested_path
-        project_file = find_project_manifest(project_root)
-        project_config = load_project_manifest(project_file) if project_file else {}
-    else:
-        raise ValueError(f"Unsupported project path: {requested_path}")
-
-    return project_file, project_config, project_root
+            return action
+    return None
 
 
 class ProjectEditor(QObject):
     def __init__(self, project_path=None):
         super().__init__()
-        self.project_file, self.project_config, self.project_root = resolve_project_target(project_path)
-        self.entry_point = self.project_config.get("entry_point", "main.py")
-        self.configured_interpreter = self.project_config.get("interpreter", "")
-        self.open_files = {}              # resolved path string -> tab widget
-        self.script_windows = []          # keep standalone windows alive
+        root = Path(project_path or Path.cwd()).expanduser().resolve()
+        if not root.exists() or not root.is_dir():
+            raise NotADirectoryError(f"Project folder does not exist: {root}")
+
+        self.project_root = root
+        self.open_files = {}  # resolved path string -> tab widget
+        self.script_windows = []  # keep standalone windows alive
         self.process = None
         self.terminal_process = None
         self._terminal_input_start = 0
         self._console_input_start = 0
         self._closing = False
-        self._tree_initialized = False
-        self._startup_scheduled = False
 
         self.window = load_ui(BASE_DIR / "ProjectWindow.ui")
-        self.window.installEventFilter(self)
-        self.window.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
-        project_name = self.project_config.get("name", self.project_root.name)
-        self.window.setWindowTitle(f"PyForge Project - {project_name}")
+        self.window.setWindowTitle(f"PyForge Project - {self.project_root.name}")
 
         self._connect_actions()
+        self._setup_project_tree()
         self._setup_tabs()
+
         self.window.Console.installEventFilter(self)
         self.window.Terminal.installEventFilter(self)
+        self._start_terminal()
 
-        # Validate the entry point before creating background processes or
-        # starting filesystem-model work. A bad manifest must not leave a
-        # partially initialized editor behind.
-        main_file = (self.project_root / self.entry_point).resolve()
-        try:
-            main_file.relative_to(self.project_root.resolve())
-        except ValueError as exc:
-            raise ProjectFormatError("The configured entry point escapes the project directory.") from exc
+        main_file = self.project_root / "main.py"
         if main_file.is_file():
             self.open_project_file(main_file)
         else:
             self._create_tab(None, "")
+
         self._terminal_write(f"PyForge project opened: {self.project_root}\n")
 
     # ----- actions / setup -------------------------------------------------
+
     def _connect_actions(self):
         connect_if_present(self.window, ("actionRun",), self.run_current_file)
         connect_if_present(self.window, ("actionStop",), self.stop_process)
@@ -155,19 +102,17 @@ class ProjectEditor(QObject):
         connect_if_present(self.window, ("actionOpen", "actionPython_Script"), self.open_standalone_dialog)
         connect_if_present(self.window, ("actionPython_Projet", "actionPython_Project"), self.open_project_dialog)
         connect_if_present(self.window, ("actionNewPS",), self.new_standalone_script)
-        connect_if_present(self.window, ("actionNew_PA", "actionNewProject", "actionNewPythonApplication", "actionNewPythonProject"), self.new_python_application)
         connect_if_present(self.window, ("actionUndo",), self.undo)
         connect_if_present(self.window, ("actionRedo",), self.redo)
 
     def _setup_project_tree(self):
         self.file_model = QFileSystemModel(self)
         self.file_model.setFilter(QDir.Filter.AllEntries | QDir.Filter.NoDotAndDotDot)
-        source_root = self.file_model.setRootPath(str(self.project_root))
-        self.tree_filter = ProjectTreeFilter(self)
-        self.tree_filter.setSourceModel(self.file_model)
+        self.file_model.setRootPath(str(self.project_root))
+
         tree = self.window.treeView
-        tree.setModel(self.tree_filter)
-        tree.setRootIndex(self.tree_filter.mapFromSource(source_root))
+        tree.setModel(self.file_model)
+        tree.setRootIndex(self.file_model.index(str(self.project_root)))
         for column in range(1, self.file_model.columnCount()):
             tree.hideColumn(column)
         tree.doubleClicked.connect(self._on_tree_double_click)
@@ -182,6 +127,7 @@ class ProjectEditor(QObject):
         tabs.tabCloseRequested.connect(self.close_tab)
 
     # ----- tab and file handling -----------------------------------------
+
     def current_tab(self):
         return self.window.MainEditorTabs.currentWidget()
 
@@ -192,6 +138,7 @@ class ProjectEditor(QObject):
     def _create_tab(self, file_path=None, content=""):
         path = Path(file_path).expanduser().resolve() if file_path else None
         tabs = self.window.MainEditorTabs
+
         if path is not None:
             existing = self.open_files.get(str(path))
             if existing is not None:
@@ -203,16 +150,21 @@ class ProjectEditor(QObject):
         tab = QWidget()
         layout = QVBoxLayout(tab)
         layout.setContentsMargins(0, 0, 0, 0)
+
         editor = PythonCodeEditor(tab)
         editor.setPlainText(content)
         layout.addWidget(editor)
+
         tab.setProperty("file_path", str(path) if path else "")
         tab.setProperty("dirty", False)
+
         title = path.name if path else "Untitled.py"
         index = tabs.addTab(tab, title)
         tabs.setCurrentIndex(index)
+
         if path is not None:
             self.open_files[str(path)] = tab
+
         editor.textChanged.connect(lambda t=tab: self._mark_dirty(t))
         return tab
 
@@ -230,10 +182,12 @@ class ProjectEditor(QObject):
         old_path = tab.property("file_path")
         if old_path:
             self.open_files.pop(old_path, None)
+
         path = Path(file_path).expanduser().resolve()
         tab.setProperty("file_path", str(path))
         tab.setProperty("dirty", False)
         self.open_files[str(path)] = tab
+
         index = self.window.MainEditorTabs.indexOf(tab)
         if index >= 0:
             self.window.MainEditorTabs.setTabText(index, path.name)
@@ -250,8 +204,7 @@ class ProjectEditor(QObject):
         self._create_tab(path, content)
 
     def _on_tree_double_click(self, index):
-        source_index = self.tree_filter.mapToSource(index)
-        path = Path(self.file_model.filePath(source_index))
+        path = Path(self.file_model.filePath(index))
         if path.is_file() and path.suffix.lower() == ".py":
             self.open_project_file(path)
 
@@ -261,63 +214,22 @@ class ProjectEditor(QObject):
             "Python Files (*.py);;All Files (*)",
         )
         if path:
-            self._launch_standalone(path)
+            self._launch_standalone(Path(path))
 
     def _launch_standalone(self, path=None):
         # Import here to avoid circular imports at module initialization.
         from Script_editor import ScriptEditor
-        from Core.diagnostics import log_event, log_exception
-        try:
-            log_event(f"Creating Script Editor for {str(path) if path else '<new script>'}")
-            editor = ScriptEditor(file_path=str(path) if path else None)
-            self.script_windows.append(editor)
-            retain_window(editor)
-            editor.window.destroyed.connect(
-                lambda *_args, obj=editor: self._forget_script_window(obj)
-            )
-            if not switch_window(self, editor):
-                return None
-            return editor
-        except Exception as error:
-            log_exception("Could not open standalone Script Editor", error)
-            QMessageBox.critical(
-                self.window,
-                "Could Not Open Python Script",
-                f"PyForge could not open the standalone script editor.\n\n{error}",
-            )
-            return None
 
-    def new_python_application(self):
-        # Import locally because Project_Creator imports ProjectEditor itself.
-        from Project_Creator import ProjectCreator
-        try:
-            creator = ProjectCreator()
-            if not hasattr(self, "project_creators"):
-                self.project_creators = []
-            self.project_creators.append(creator)
-            retain_window(creator)
-            creator.window.destroyed.connect(
-                lambda *_args, obj=creator: self._forget_project_creator(obj)
-            )
-            if not switch_window(self, creator):
-                return
-        except Exception as error:
-            QMessageBox.critical(
-                self.window,
-                "Project Creator Failed",
-                f"Could not open the project creation window.\n\n{error}",
-            )
+        editor = ScriptEditor(file_path=str(path) if path else None)
+        self.script_windows.append(editor)
+        editor.window.destroyed.connect(lambda *_args, obj=editor: self._forget_script_window(obj))
+        editor.show()
+        return editor
 
     def _forget_script_window(self, editor):
         try:
             self.script_windows.remove(editor)
         except ValueError:
-            pass
-
-    def _forget_project_creator(self, creator):
-        try:
-            self.project_creators.remove(creator)
-        except (AttributeError, ValueError):
             pass
 
     def new_standalone_script(self):
@@ -327,9 +239,11 @@ class ProjectEditor(QObject):
         )
         if not path:
             return
+
         target = Path(path).expanduser().resolve()
         if target.suffix.lower() != ".py":
             target = target.with_suffix(".py")
+
         if target.exists():
             answer = QMessageBox.question(
                 self.window, "File Exists", f"{target.name} already exists. Open it?",
@@ -345,94 +259,27 @@ class ProjectEditor(QObject):
             except OSError as error:
                 QMessageBox.critical(self.window, "Create Failed", str(error))
                 return
+
         self._launch_standalone(target)
 
     def open_project_dialog(self):
-        path, _ = QFileDialog.getOpenFileName(
-            self.window,
-            "Open PyForge Project",
-            str(self.project_root),
-            "PyForge Projects (*.forproj);;Legacy Project Metadata (*.json);;All Files (*)",
+        folder = QFileDialog.getExistingDirectory(
+            self.window, "Open Python Project", str(self.project_root)
         )
-        if not path:
+        if not folder:
             return
-        self.open_project(path)
-
-    def open_project(self, project_path):
-        """Switch this window to another project without creating a second editor."""
         try:
-            project_file, project_config, project_root = resolve_project_target(project_path)
+            editor = ProjectEditor(folder)
         except Exception as error:
             QMessageBox.critical(self.window, "Open Project Failed", str(error))
-            return False
+            return
 
-        new_entry_point = project_config.get("entry_point", "main.py")
-        new_main_file = (project_root / new_entry_point).resolve()
-        try:
-            new_main_file.relative_to(project_root.resolve())
-        except ValueError:
-            QMessageBox.critical(
-                self.window, "Invalid Project Entry Point",
-                "The configured entry point must stay inside the project directory.",
-            )
-            return False
-
-        tabs = self.window.MainEditorTabs
-        # Resolve every dirty tab before changing project state. A cancel keeps
-        # the current project and its tabs open.
-        for index in reversed(range(tabs.count())):
-            tab = tabs.widget(index)
-            if not tab or not tab.property("dirty"):
-                continue
-            name = tabs.tabText(index).rstrip("*")
-            answer = QMessageBox.question(
-                self.window, "Unsaved Changes",
-                f"Save changes to {name} before opening another project?",
-                QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel,
-                QMessageBox.StandardButton.Save,
-            )
-            if answer == QMessageBox.StandardButton.Cancel:
-                return False
-            if answer == QMessageBox.StandardButton.Save:
-                tabs.setCurrentIndex(index)
-                if not self.save_current_file():
-                    return False
-
-        # Stop old processes before switching the shell working directory.
-        for attribute in ("process", "terminal_process"):
-            process = getattr(self, attribute, None)
-            if process is not None:
-                if process.state() != QProcess.ProcessState.NotRunning:
-                    process.kill()
-                    process.waitForFinished(1000)
-                process.deleteLater()
-                setattr(self, attribute, None)
-
-        for index in reversed(range(tabs.count())):
-            tab = tabs.widget(index)
-            tabs.removeTab(index)
-            tab.deleteLater()
-        self.open_files.clear()
-
-        self.project_file = project_file
-        self.project_config = project_config
-        self.project_root = project_root
-        self.entry_point = new_entry_point
-        self.configured_interpreter = project_config.get("interpreter", "")
-
-        project_name = project_config.get("name", project_root.name)
-        self.window.setWindowTitle(f"PyForge Project - {project_name}")
-        if self._tree_initialized:
-            source_root = self.file_model.setRootPath(str(project_root))
-            self.window.treeView.setRootIndex(self.tree_filter.mapFromSource(source_root))
-
-        self._start_terminal()
-        if new_main_file.is_file():
-            self.open_project_file(new_main_file)
-        else:
-            self._create_tab(None, "")
-        self._terminal_write(f"PyForge project opened: {project_root}\n")
-        return True
+        # Hold the Python wrapper alive for as long as its window is open.
+        if not hasattr(self, "project_windows"):
+            self.project_windows = []
+        self.project_windows.append(editor)
+        editor.window.destroyed.connect(lambda *_args, obj=editor: self._forget_project_window(obj))
+        editor.show()
 
     def _forget_project_window(self, editor):
         try:
@@ -444,6 +291,7 @@ class ProjectEditor(QObject):
         tab, editor = self.current_tab(), self.current_editor()
         if tab is None or editor is None:
             return False
+
         file_path = tab.property("file_path")
         if not file_path:
             return self.save_as()
@@ -453,6 +301,7 @@ class ProjectEditor(QObject):
         tab, editor = self.current_tab(), self.current_editor()
         if tab is None or editor is None:
             return False
+
         old_path = tab.property("file_path") or str(self.project_root / "untitled.py")
         path, _ = QFileDialog.getSaveFileName(
             self.window, "Save Python Script As", old_path,
@@ -460,6 +309,7 @@ class ProjectEditor(QObject):
         )
         if not path:
             return False
+
         target = Path(path).expanduser().resolve()
         if target.suffix.lower() != ".py" and not target.name.endswith("."):
             target = target.with_suffix(".py")
@@ -473,6 +323,7 @@ class ProjectEditor(QObject):
         except OSError as error:
             QMessageBox.critical(self.window, "Save Failed", str(error))
             return False
+
         self._mark_saved(tab, path)
         self.window.statusbar.showMessage(f"Saved {path}", 4000)
         return True
@@ -482,6 +333,7 @@ class ProjectEditor(QObject):
         tab = tabs.widget(index)
         if tab is None:
             return
+
         if tab.property("dirty"):
             name = tabs.tabText(index).rstrip("*")
             answer = QMessageBox.question(
@@ -495,11 +347,14 @@ class ProjectEditor(QObject):
                 tabs.setCurrentIndex(index)
                 if not self.save_current_file():
                     return
+
         path = tab.property("file_path")
         if path:
             self.open_files.pop(path, None)
+
         tabs.removeTab(index)
         tab.deleteLater()
+
         if tabs.count() == 0 and not self._closing:
             self._create_tab()
 
@@ -514,6 +369,7 @@ class ProjectEditor(QObject):
             editor.redo()
 
     # ----- running project scripts ---------------------------------------
+
     def _python_executable(self):
         candidates = [
             self.project_root / ".venv" / "Scripts" / "python.exe",
@@ -524,9 +380,6 @@ class ProjectEditor(QObject):
         for candidate in candidates:
             if candidate.is_file():
                 return str(candidate)
-        configured = Path(self.configured_interpreter).expanduser() if self.configured_interpreter else None
-        if configured is not None and configured.is_file():
-            return str(configured.resolve())
         return sys.executable
 
     def run_current_file(self):
@@ -534,9 +387,11 @@ class ProjectEditor(QObject):
         if tab is None or editor is None:
             self._terminal_write("No script is selected.\n")
             return
+
         if not self.save_current_file():
             self._terminal_write("Run cancelled because the script was not saved.\n")
             return
+
         path = Path(tab.property("file_path")).resolve()
         try:
             ast.parse(editor.toPlainText(), filename=str(path))
@@ -546,12 +401,15 @@ class ProjectEditor(QObject):
             )
             self.window.TerminalTabWidget.setCurrentWidget(self.window.ProblemsTab)
             return
+
         if self.process is not None and self.process.state() != QProcess.ProcessState.NotRunning:
             self._terminal_write("A Python process is already running. Stop it first.\n")
             return
+
         self.window.Console.clear()
         self._console_input_start = 0
         self.window.TerminalTabWidget.setCurrentWidget(self.window.ConsoleTab)
+
         process = QProcess(self)
         self.process = process
         process.setProgram(self._python_executable())
@@ -562,6 +420,7 @@ class ProjectEditor(QObject):
         process.readyReadStandardError.connect(self._read_process_stderr)
         process.finished.connect(self._process_finished)
         process.errorOccurred.connect(self._process_error)
+
         self._terminal_write(f"Running {path.name}...\n")
         process.start()
 
@@ -599,6 +458,7 @@ class ProjectEditor(QObject):
             self._terminal_write("Python process stopped.\n")
 
     # ----- console and terminal -------------------------------------------
+
     def _console_write(self, text):
         console = self.window.Console
         cursor = console.textCursor()
@@ -620,18 +480,30 @@ class ProjectEditor(QObject):
     def _start_terminal(self):
         if self.terminal_process and self.terminal_process.state() != QProcess.ProcessState.NotRunning:
             return
-        shell = os.environ.get("COMSPEC", "cmd.exe") if os.name == "nt" else os.environ.get("SHELL", "/bin/bash")
+
         process = QProcess(self)
         self.terminal_process = process
-        process.setProgram(shell)
+
         if os.name == "nt":
+            process.setProgram(os.environ.get("COMSPEC", "cmd.exe"))
             process.setArguments(["/Q"])
-        elif Path(shell).name == "bash":
-            # Avoid running arbitrary user shell startup files during editor
-            # startup; slow prompts/plugins can make both editor windows look frozen.
-            process.setArguments(["--noprofile", "--norc", "-i"])
         else:
-            process.setArguments(["-i"])
+            # FREEZE FIX: never run `shell -i` here. An interactive shell
+            # inherits PyForge's controlling terminal (VS Code's debug terminal,
+            # or whatever launched PyForge), grabs the foreground process group
+            # and leaves PyForge in the background, so the kernel stops it
+            # (SIGTTIN/SIGTTOU) -> window hangs, VS Code says "not responding".
+            # `setsid` detaches the shell from that terminal, and without -i it
+            # just reads commands from the pipe.
+            shell = os.environ.get("SHELL", "/bin/bash")
+            setsid = shutil.which("setsid")
+            if setsid:
+                process.setProgram(setsid)
+                process.setArguments([shell])
+            else:
+                process.setProgram(shell)
+                process.setArguments([])
+
         process.setWorkingDirectory(str(self.project_root))
         process.setProcessChannelMode(QProcess.ProcessChannelMode.SeparateChannels)
         process.readyReadStandardOutput.connect(self._read_terminal_output)
@@ -652,21 +524,6 @@ class ProjectEditor(QObject):
             self._terminal_write(f"Could not start terminal: {self.terminal_process.errorString()}\n")
 
     def eventFilter(self, watched, event):
-        if watched is self.window and event.type() == QEvent.Type.Close:
-            self._closing = True
-            tabs = self.window.MainEditorTabs
-            for index in reversed(range(tabs.count())):
-                tab = tabs.widget(index)
-                self.close_tab(index)
-                if tabs.indexOf(tab) != -1:
-                    self._closing = False
-                    event.ignore()
-                    return True
-            for process in (self.process, self.terminal_process):
-                if process and process.state() != QProcess.ProcessState.NotRunning:
-                    process.kill()
-            return False
-
         if event.type() == QEvent.Type.KeyPress and event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
             if watched is self.window.Console:
                 if self.process and self.process.state() == QProcess.ProcessState.Running:
@@ -691,35 +548,22 @@ class ProjectEditor(QObject):
         return super().eventFilter(watched, event)
 
     # ----- lifecycle -------------------------------------------------------
+
     def show(self):
         self.window.show()
-        if not self._startup_scheduled:
-            self._startup_scheduled = True
-            # Let Qt paint the window before touching the filesystem model or
-            # launching an interactive shell. Slow disks and shell hooks should
-            # not make the whole editor look dead before it appears.
-            QTimer.singleShot(50, self._finish_startup)
 
-    def _finish_startup(self):
-        from Core.diagnostics import log_event, log_exception
-        if not self.window.isVisible():
-            log_event("Skipped Project Editor startup because its window is not visible")
-            return
-        try:
-            log_event(f"Project Editor startup: begin tree setup for {self.project_root}")
-            if not self._tree_initialized:
-                self._setup_project_tree()
-                self._tree_initialized = True
-            log_event("Project Editor startup: file tree ready")
-            self._start_terminal()
-            log_event("Project Editor startup: terminal start requested")
-        except Exception as error:
-            log_exception("Project Editor deferred startup failed", error)
-            QMessageBox.critical(
-                self.window,
-                "Project Editor Startup Error",
-                "The project window opened, but one of its background services "
-                f"could not start.\n\n{error}",
-            )
+    def closeEvent(self, event):
+        self._closing = True
+        for index in reversed(range(self.window.MainEditorTabs.count())):
+            self.close_tab(index)
+            if self.window.MainEditorTabs.count() and self.window.MainEditorTabs.widget(index) is not None:
+                # close_tab was cancelled due unsaved changes
+                self._closing = False
+                event.ignore()
+                return
 
-
+        if self.process and self.process.state() != QProcess.ProcessState.NotRunning:
+            self.process.kill()
+        if self.terminal_process and self.terminal_process.state() != QProcess.ProcessState.NotRunning:
+            self.terminal_process.kill()
+        event.accept()
