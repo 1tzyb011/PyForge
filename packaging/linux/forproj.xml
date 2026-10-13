@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="application/x-pyforge-project">
+    <comment>PyForge project</comment>
+    <glob pattern="*.forproj"/>
+  </mime-type>
+</mime-info>
