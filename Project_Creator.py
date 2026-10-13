@@ -26,6 +26,7 @@ from Core.project_builder import (
     build_project,
     ProjectCreationError,
 )
+from Core.window_registry import retain_window
 
 
 APP_DIR = Path(__file__).resolve().parent
@@ -399,13 +400,25 @@ class ProjectCreator(QObject):
                 "Project Created",
                 "\n".join(lines),
             )
-                # Open the newly created project.
-        self.project_editor = ProjectEditor(
-            project_path=result["project_file"]
-        )
-        self.project_editor.show()
+                # Keep the new editor alive independently of this creator dialog.
+        # Otherwise closing the creator can release its only Python reference.
+        try:
+            self.project_editor = ProjectEditor(
+                project_path=result["project_file"]
+            )
+            retain_window(self.project_editor)
+            self.project_editor.show()
+        except Exception as exc:
+            QMessageBox.critical(
+                self.window,
+                "Project Created, Could Not Open",
+                "The project files were created successfully, but Project Editor "
+                f"could not open them.\n\n{exc}\n\n"
+                f"Open this project manually:\n{result['project_file']}",
+            )
+            return
 
-        # Close the creator after opening the editor.
+        # Close only the creator dialog. The new editor has its own lifetime.
         self.window.close()    
 
     def show(self):
