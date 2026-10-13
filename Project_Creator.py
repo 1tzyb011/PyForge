@@ -26,7 +26,7 @@ from Core.project_builder import (
     build_project,
     ProjectCreationError,
 )
-from Core.window_registry import retain_window
+from Core.window_registry import retain_window, switch_window
 
 
 APP_DIR = Path(__file__).resolve().parent
@@ -407,7 +407,8 @@ class ProjectCreator(QObject):
                 project_path=result["project_file"]
             )
             retain_window(self.project_editor)
-            self.project_editor.show()
+            if not switch_window(self, self.project_editor):
+                return
         except Exception as exc:
             QMessageBox.critical(
                 self.window,
@@ -418,8 +419,7 @@ class ProjectCreator(QObject):
             )
             return
 
-        # Close only the creator dialog. The new editor has its own lifetime.
-        self.window.close()    
+
 
     def show(self):
         self.window.show()

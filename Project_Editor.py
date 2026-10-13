@@ -25,7 +25,7 @@ from Core.project_format import (
     find_project_manifest,
     load_project_manifest,
 )
-from Core.window_registry import retain_window
+from Core.window_registry import retain_window, switch_window
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -266,16 +266,20 @@ class ProjectEditor(QObject):
     def _launch_standalone(self, path=None):
         # Import here to avoid circular imports at module initialization.
         from Script_editor import ScriptEditor
+        from Core.diagnostics import log_event, log_exception
         try:
+            log_event(f"Creating Script Editor for {str(path) if path else '<new script>'}")
             editor = ScriptEditor(file_path=str(path) if path else None)
             self.script_windows.append(editor)
             retain_window(editor)
             editor.window.destroyed.connect(
                 lambda *_args, obj=editor: self._forget_script_window(obj)
             )
-            editor.show()
+            if not switch_window(self, editor):
+                return None
             return editor
         except Exception as error:
+            log_exception("Could not open standalone Script Editor", error)
             QMessageBox.critical(
                 self.window,
                 "Could Not Open Python Script",
@@ -295,7 +299,8 @@ class ProjectEditor(QObject):
             creator.window.destroyed.connect(
                 lambda *_args, obj=creator: self._forget_project_creator(obj)
             )
-            creator.show()
+            if not switch_window(self, creator):
+                return
         except Exception as error:
             QMessageBox.critical(
                 self.window,
@@ -696,14 +701,20 @@ class ProjectEditor(QObject):
             QTimer.singleShot(50, self._finish_startup)
 
     def _finish_startup(self):
+        from Core.diagnostics import log_event, log_exception
         if not self.window.isVisible():
+            log_event("Skipped Project Editor startup because its window is not visible")
             return
         try:
+            log_event(f"Project Editor startup: begin tree setup for {self.project_root}")
             if not self._tree_initialized:
                 self._setup_project_tree()
                 self._tree_initialized = True
+            log_event("Project Editor startup: file tree ready")
             self._start_terminal()
+            log_event("Project Editor startup: terminal start requested")
         except Exception as error:
+            log_exception("Project Editor deferred startup failed", error)
             QMessageBox.critical(
                 self.window,
                 "Project Editor Startup Error",
