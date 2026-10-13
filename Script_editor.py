@@ -269,7 +269,7 @@ class ScriptEditor(QObject):
             self.window,
             "Open PyForge Project",
             str(self.current_file.parent if self.current_file else Path.home()),
-            "PyForge Projects (*.forproj);;Legacy Project Metadata (pyforge.json)",
+            "PyForge Projects (*.forproj);;Legacy Project Metadata (*.json);;All Files (*)",
         )
         if not project_path:
             return
