@@ -276,17 +276,20 @@ class ScriptEditor(QObject):
         if not project_path:
             return
         from Project_Editor import ProjectEditor
+        from Core.diagnostics import log_event, log_exception
         try:
+            log_event(f"Creating Project Editor for {project_path}")
             child = ProjectEditor(project_path)
             retain_window(child)
+            if not hasattr(self, "_project_windows"):
+                self._project_windows = []
+            self._project_windows.append(child)
+            child.window.destroyed.connect(lambda *_args, obj=child: self._forget_project(obj))
+            if not switch_window(self, child):
+                return
         except Exception as error:
+            log_exception(f"Could not open project {project_path}", error)
             QMessageBox.critical(self.window, "Open Project Failed", str(error))
-            return
-        if not hasattr(self, "_project_windows"):
-            self._project_windows = []
-        self._project_windows.append(child)
-        child.window.destroyed.connect(lambda *_args, obj=child: self._forget_project(obj))
-        if not switch_window(self, child):
             return
 
     def _forget_project(self, child):
