@@ -6,6 +6,7 @@ fatal-signal traces there when Python can capture them.
 
 import faulthandler
 import os
+import signal
 import sys
 import threading
 import time
@@ -96,6 +97,10 @@ def install_diagnostics():
             f"PyForge started (pid={os.getpid()}, python={sys.version.split()[0]})\n"
         )
         faulthandler.enable(file=_LOG_HANDLE, all_threads=True)
+        if hasattr(signal, 'SIGUSR1'):
+            faulthandler.register(
+                signal.SIGUSR1, file=_LOG_HANDLE, all_threads=True, chain=False
+            )
     except Exception as error:
         log_event(f"Could not enable fatal-crash logging: {error!r}")
 
