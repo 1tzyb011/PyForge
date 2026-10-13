@@ -9,7 +9,7 @@ import os
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QFile, QDir, QEvent, QObject, QProcess, QSortFilterProxyModel, Qt
+from PySide6.QtCore import QFile, QDir, QEvent, QObject, QProcess, QSortFilterProxyModel, QTimer, Qt
 from PySide6.QtWidgets import (
     QFileDialog,
     QFileSystemModel,
@@ -118,6 +118,8 @@ class ProjectEditor(QObject):
         self._terminal_input_start = 0
         self._console_input_start = 0
         self._closing = False
+        self._tree_initialized = False
+        self._startup_scheduled = False
 
         self.window = load_ui(BASE_DIR / "ProjectWindow.ui")
         self.window.installEventFilter(self)
@@ -126,12 +128,13 @@ class ProjectEditor(QObject):
         self.window.setWindowTitle(f"PyForge Project - {project_name}")
 
         self._connect_actions()
-        self._setup_project_tree()
         self._setup_tabs()
         self.window.Console.installEventFilter(self)
         self.window.Terminal.installEventFilter(self)
-        self._start_terminal()
 
+        # Validate the entry point before creating background processes or
+        # starting filesystem-model work. A bad manifest must not leave a
+        # partially initialized editor behind.
         main_file = (self.project_root / self.entry_point).resolve()
         try:
             main_file.relative_to(self.project_root.resolve())
@@ -414,8 +417,9 @@ class ProjectEditor(QObject):
 
         project_name = project_config.get("name", project_root.name)
         self.window.setWindowTitle(f"PyForge Project - {project_name}")
-        source_root = self.file_model.setRootPath(str(project_root))
-        self.window.treeView.setRootIndex(self.tree_filter.mapFromSource(source_root))
+        if self._tree_initialized:
+            source_root = self.file_model.setRootPath(str(project_root))
+            self.window.treeView.setRootIndex(self.tree_filter.mapFromSource(source_root))
 
         self._start_terminal()
         if new_main_file.is_file():
@@ -684,5 +688,27 @@ class ProjectEditor(QObject):
     # ----- lifecycle -------------------------------------------------------
     def show(self):
         self.window.show()
+        if not self._startup_scheduled:
+            self._startup_scheduled = True
+            # Let Qt paint the window before touching the filesystem model or
+            # launching an interactive shell. Slow disks and shell hooks should
+            # not make the whole editor look dead before it appears.
+            QTimer.singleShot(50, self._finish_startup)
+
+    def _finish_startup(self):
+        if not self.window.isVisible():
+            return
+        try:
+            if not self._tree_initialized:
+                self._setup_project_tree()
+                self._tree_initialized = True
+            self._start_terminal()
+        except Exception as error:
+            QMessageBox.critical(
+                self.window,
+                "Project Editor Startup Error",
+                "The project window opened, but one of its background services "
+                f"could not start.\n\n{error}",
+            )
 
 
