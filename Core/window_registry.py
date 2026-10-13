@@ -42,3 +42,47 @@ def retain_window(controller):
         controller._pyforge_window_registered = True
 
     return controller
+
+
+
+def switch_window(current_controller, replacement_controller):
+    """Show a replacement editor, then close the current window if allowed.
+
+    If the current editor refuses to close (for example, the user cancels an
+    unsaved-changes prompt), the replacement is closed and the current editor
+    remains active.
+    """
+    from Core.diagnostics import log_event
+
+    if replacement_controller is current_controller:
+        return True
+
+    replacement_window = getattr(replacement_controller, "window", None)
+    if replacement_window is None:
+        raise TypeError("The replacement controller has no window.")
+
+    retain_window(replacement_controller)
+    try:
+        replacement_controller.show()
+    except Exception:
+        replacement_window.close()
+        raise
+
+    current_window = getattr(current_controller, "window", None)
+    if current_window is None:
+        log_event(f"Opened window {type(replacement_controller).__name__}; no prior window.")
+        return True
+
+    if not current_window.close():
+        replacement_window.close()
+        log_event(
+            f"Window switch cancelled: {type(current_controller).__name__} "
+            f"refused to close; replacement was discarded."
+        )
+        return False
+
+    log_event(
+        f"Window switch: {type(current_controller).__name__} -> "
+        f"{type(replacement_controller).__name__}"
+    )
+    return True
