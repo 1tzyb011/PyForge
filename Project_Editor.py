@@ -53,13 +53,16 @@ def load_ui(ui_path: Path):
 
 
 def connect_if_present(window, names, callback):
-    """Connect the first matching QAction, supporting both old and new UI names."""
+    """Connect every available QAction alias without connecting one action twice."""
+    connected = []
+    seen = set()
     for name in names:
         action = getattr(window, name, None)
-        if action is not None:
+        if action is not None and id(action) not in seen:
             action.triggered.connect(callback)
-            return action
-    return None
+            connected.append(action)
+            seen.add(id(action))
+    return connected[0] if connected else None
 
 
 class ProjectEditor(QObject):
