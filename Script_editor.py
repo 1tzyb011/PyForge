@@ -80,6 +80,7 @@ class ScriptEditor(QObject):
         _connect_if_present(self.window, ("actionRun",), self.run_script)
         _connect_if_present(self.window, ("actionStop",), self.stop_script)
         _connect_if_present(self.window, ("actionNewPS",), self.new_standalone_script)
+        _connect_if_present(self.window, ("actionNew_PA", "actionNewProject", "actionNewPythonApplication"), self.new_python_application)
         _connect_if_present(self.window, ("actionPython_Project", "actionPython_Projet"), self.open_project_dialog)
         _connect_if_present(self.window, ("actionUndo",), self.editor.undo)
         _connect_if_present(self.window, ("actionRedo",), self.editor.redo)
@@ -210,10 +211,35 @@ class ScriptEditor(QObject):
         self._open_child_script_editor(target)
 
     def _open_child_script_editor(self, path):
-        child = ScriptEditor(file_path=str(path))
-        self._child_windows.append(child)
-        child.window.destroyed.connect(lambda *_args, obj=child: self._forget_child(obj))
-        child.show()
+        try:
+            child = ScriptEditor(file_path=str(path))
+            self._child_windows.append(child)
+            child.window.destroyed.connect(
+                lambda *_args, obj=child: self._forget_child(obj)
+            )
+            child.show()
+            return child
+        except Exception as error:
+            QMessageBox.critical(
+                self.window,
+                "Could Not Open Python Script",
+                f"PyForge could not open the standalone script editor.\n\n{error}",
+            )
+            return None
+
+    def new_python_application(self):
+        # Import locally to avoid the ProjectCreator/ProjectEditor import cycle.
+        from Project_Creator import ProjectCreator
+        try:
+            creator = ProjectCreator()
+            self._child_windows.append(creator)
+            creator.show()
+        except Exception as error:
+            QMessageBox.critical(
+                self.window,
+                "Project Creator Failed",
+                f"Could not open the project creation window.\n\n{error}",
+            )
 
     def _forget_child(self, child):
         try:
@@ -222,12 +248,17 @@ class ScriptEditor(QObject):
             pass
 
     def open_project_dialog(self):
-        folder = QFileDialog.getExistingDirectory(self.window, "Open Python Project", str(Path.home()))
-        if not folder:
+        project_path, _ = QFileDialog.getOpenFileName(
+            self.window,
+            "Open PyForge Project",
+            str(self.current_file.parent if self.current_file else Path.home()),
+            "PyForge Projects (*.forproj);;Legacy Project Metadata (pyforge.json)",
+        )
+        if not project_path:
             return
         from Project_Editor import ProjectEditor
         try:
-            child = ProjectEditor(folder)
+            child = ProjectEditor(project_path)
         except Exception as error:
             QMessageBox.critical(self.window, "Open Project Failed", str(error))
             return
