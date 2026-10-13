@@ -10,6 +10,7 @@ from PySide6.QtWidgets import QFileDialog, QMessageBox, QPlainTextEdit, QTabWidg
 from PySide6.QtUiTools import QUiLoader
 
 from python_code_editor import PythonCodeEditor
+from Core.window_registry import retain_window
 
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -55,6 +56,8 @@ class ScriptEditor(QObject):
     def __init__(self, file_path=None):
         super().__init__()
         self.window = _load_script_ui()
+        self.window.installEventFilter(self)
+        self.window.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         self.editor = self.window.findChild(PythonCodeEditor, "CodeEditor")
         if self.editor is None:
             raise RuntimeError("Could not find CodeEditor in Script_editor.ui")
@@ -85,7 +88,7 @@ class ScriptEditor(QObject):
         _connect_if_present(self.window, ("actionRun",), self.run_script)
         _connect_if_present(self.window, ("actionStop",), self.stop_script)
         _connect_if_present(self.window, ("actionNewPS",), self.new_standalone_script)
-        _connect_if_present(self.window, ("actionNew_PA", "actionNewProject", "actionNewPythonApplication"), self.new_python_application)
+        _connect_if_present(self.window, ("actionNew_PA", "actionNewProject", "actionNewPythonApplication", "actionNewPythonProject"), self.new_python_application)
         _connect_if_present(self.window, ("actionPython_Project", "actionPython_Projet"), self.open_project_dialog)
         _connect_if_present(self.window, ("actionUndo",), self.editor.undo)
         _connect_if_present(self.window, ("actionRedo",), self.editor.redo)
@@ -219,6 +222,7 @@ class ScriptEditor(QObject):
         try:
             child = ScriptEditor(file_path=str(path))
             self._child_windows.append(child)
+            retain_window(child)
             child.window.destroyed.connect(
                 lambda *_args, obj=child: self._forget_child(obj)
             )
@@ -238,6 +242,10 @@ class ScriptEditor(QObject):
         try:
             creator = ProjectCreator()
             self._child_windows.append(creator)
+            retain_window(creator)
+            creator.window.destroyed.connect(
+                lambda *_args, obj=creator: self._forget_child(obj)
+            )
             creator.show()
         except Exception as error:
             QMessageBox.critical(
@@ -270,6 +278,7 @@ class ScriptEditor(QObject):
         if not hasattr(self, "_project_windows"):
             self._project_windows = []
         self._project_windows.append(child)
+        retain_window(child)
         child.window.destroyed.connect(lambda *_args, obj=child: self._forget_project(obj))
         child.show()
 
@@ -394,6 +403,13 @@ class ScriptEditor(QObject):
             self._terminal_write(f"Could not start terminal: {self.terminal_process.errorString()}\n")
 
     def eventFilter(self, watched, event):
+        if watched is self.window and event.type() == QEvent.Type.Close:
+            if not self._confirm_discard_or_save():
+                event.ignore()
+                return True
+            self._cleanup_processes()
+            return False
+
         if event.type() == QEvent.Type.KeyPress and event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
             if watched is self.console and self.process and self.process.state() == QProcess.ProcessState.Running:
                 cursor = self.console.textCursor()
@@ -424,18 +440,4 @@ class ScriptEditor(QObject):
             if process and process.state() != QProcess.ProcessState.NotRunning:
                 process.kill()
 
-    def closeEvent(self, event):
-        if self._dirty:
-            answer = QMessageBox.question(
-                self.window, "Unsaved Changes", "Save changes before closing?",
-                QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel,
-                QMessageBox.StandardButton.Save,
-            )
-            if answer == QMessageBox.StandardButton.Cancel:
-                event.ignore()
-                return
-            if answer == QMessageBox.StandardButton.Save and not self.save_file():
-                event.ignore()
-                return
-        self._cleanup_processes()
-        event.accept()
+
