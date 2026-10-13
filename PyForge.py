@@ -34,7 +34,7 @@ def main():
             controller = ProjectEditor(project_path=target.resolve())
             controller.show()
         else:
-            controller = ProjectCreator()
+            controller = ScriptEditor()
             controller.show()
     except Exception as exc:
         QMessageBox.critical(None, "PyForge Could Not Open the File", str(exc))
