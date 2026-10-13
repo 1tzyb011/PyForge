@@ -400,7 +400,7 @@ class ProjectCreator(QObject):
                 "Project Created",
                 "\n".join(lines),
             )
-                # Keep the new editor alive independently of this creator dialog.
+        # Keep the new editor alive independently of this creator dialog.
         # Otherwise closing the creator can release its only Python reference.
         try:
             self.project_editor = ProjectEditor(
