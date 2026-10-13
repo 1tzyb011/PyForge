@@ -61,9 +61,14 @@ def switch_window(current_controller, replacement_controller):
     if replacement_window is None:
         raise TypeError("The replacement controller has no window.")
 
+    log_event(
+        f"Window switch requested: {type(current_controller).__name__} -> "
+        f"{type(replacement_controller).__name__}"
+    )
     retain_window(replacement_controller)
     try:
         replacement_controller.show()
+        log_event(f"Replacement window shown: {type(replacement_controller).__name__}")
     except Exception:
         replacement_window.close()
         raise
