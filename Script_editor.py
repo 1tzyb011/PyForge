@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 from PySide6.QtCore import QFile, QEvent, QObject, QProcess, Qt
-from PySide6.QtWidgets import QFileDialog, QMessageBox
+from PySide6.QtWidgets import QFileDialog, QMessageBox, QPlainTextEdit, QTabWidget, QWidget
 from PySide6.QtUiTools import QUiLoader
 
 from python_code_editor import PythonCodeEditor
@@ -59,11 +59,16 @@ class ScriptEditor(QObject):
         if self.editor is None:
             raise RuntimeError("Could not find CodeEditor in Script_editor.ui")
 
-        self.console = self.window.findChild(type(self.window.Console), "Console")
-        self.terminal = self.window.findChild(type(self.window.Terminal), "Terminal")
-        self.problems = self.window.findChild(type(self.window.problems), "problems")
-        if self.console is None or self.terminal is None or self.problems is None:
-            raise RuntimeError("Script editor UI is missing Console, Terminal, or problems widget")
+        # Resolve child widgets by Qt object name instead of dynamic attributes.
+        self.console = self.window.findChild(QPlainTextEdit, "Console")
+        self.terminal = self.window.findChild(QPlainTextEdit, "Terminal")
+        self.problems = self.window.findChild(QPlainTextEdit, "problems")
+        self.statusbar = self.window.statusBar()
+        self.terminal_tabs = self.window.findChild(QTabWidget, "TerminalTabWidget")
+        self.problems_tab = self.window.findChild(QWidget, "ProblemsTab")
+        self.console_tab = self.window.findChild(QWidget, "ConsoleTab")
+        if any(widget is None for widget in (self.console, self.terminal, self.problems, self.terminal_tabs, self.problems_tab, self.console_tab)):
+            raise RuntimeError("Script_editor.ui is missing a required console, terminal, or tab widget.")
 
         self.current_file = None
         self._dirty = False
@@ -124,7 +129,7 @@ class ScriptEditor(QObject):
         self.current_file = path
         self._dirty = False
         self._update_title()
-        self.window.statusbar.showMessage(f"Opened {path}", 4000)
+        self.statusbar.showMessage(f"Opened {path}", 4000)
         return True
 
     def open_file_dialog(self):
@@ -166,7 +171,7 @@ class ScriptEditor(QObject):
         self._dirty = False
         self.editor.document().setModified(False)
         self._update_title()
-        self.window.statusbar.showMessage(f"Saved {path}", 4000)
+        self.statusbar.showMessage(f"Saved {path}", 4000)
         return True
 
     def _confirm_discard_or_save(self):
@@ -295,14 +300,14 @@ class ScriptEditor(QObject):
             ast.parse(self.editor.toPlainText(), filename=str(self.current_file))
         except SyntaxError as error:
             self.problems.setPlainText(f"Line {error.lineno}, column {error.offset}: {error.msg}")
-            self.window.TerminalTabWidget.setCurrentWidget(self.window.ProblemsTab)
+            self.terminal_tabs.setCurrentWidget(self.problems_tab)
             return
         if self.process and self.process.state() != QProcess.ProcessState.NotRunning:
             self._terminal_write("A script is already running. Stop it first.\n")
             return
         self.console.clear()
         self._console_input_start = 0
-        self.window.TerminalTabWidget.setCurrentWidget(self.window.ConsoleTab)
+        self.terminal_tabs.setCurrentWidget(self.console_tab)
         process = QProcess(self)
         self.process = process
         process.setProgram(self._python_executable())
@@ -327,7 +332,7 @@ class ScriptEditor(QObject):
             text = bytes(self.process.readAllStandardError()).decode("utf-8", errors="replace")
             if text:
                 self.problems.appendPlainText(text.rstrip("\n"))
-                self.window.TerminalTabWidget.setCurrentWidget(self.window.ProblemsTab)
+                self.terminal_tabs.setCurrentWidget(self.problems_tab)
 
     def _process_finished(self, exit_code, exit_status):
         message = f"Process finished with exit code {exit_code}.\n" if exit_status == QProcess.ExitStatus.NormalExit else "Process crashed.\n"
