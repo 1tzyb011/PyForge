@@ -321,7 +321,7 @@ class ProjectEditor(QObject):
             self.window,
             "Open PyForge Project",
             str(self.project_root),
-            "PyForge Projects (*.forproj);;Legacy Project Metadata (pyforge.json)",
+            "PyForge Projects (*.forproj);;Legacy Project Metadata (*.json);;All Files (*)",
         )
         if not path:
             return
