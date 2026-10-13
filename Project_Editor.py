@@ -25,7 +25,7 @@ from Core.project_format import (
     find_project_manifest,
     load_project_manifest,
 )
-from Core.window_registry import retain_window
+from Core.window_registry import retain_window, switch_window
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -273,7 +273,8 @@ class ProjectEditor(QObject):
             editor.window.destroyed.connect(
                 lambda *_args, obj=editor: self._forget_script_window(obj)
             )
-            editor.show()
+            if not switch_window(self, editor):
+                return None
             return editor
         except Exception as error:
             QMessageBox.critical(
@@ -295,7 +296,8 @@ class ProjectEditor(QObject):
             creator.window.destroyed.connect(
                 lambda *_args, obj=creator: self._forget_project_creator(obj)
             )
-            creator.show()
+            if not switch_window(self, creator):
+                return
         except Exception as error:
             QMessageBox.critical(
                 self.window,
