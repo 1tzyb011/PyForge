@@ -126,6 +126,7 @@ class ProjectEditor(QObject):
         connect_if_present(self.window, ("actionOpen", "actionPython_Script"), self.open_standalone_dialog)
         connect_if_present(self.window, ("actionPython_Projet", "actionPython_Project"), self.open_project_dialog)
         connect_if_present(self.window, ("actionNewPS",), self.new_standalone_script)
+        connect_if_present(self.window, ("actionNew_PA", "actionNewProject", "actionNewPythonApplication"), self.new_python_application)
         connect_if_present(self.window, ("actionUndo",), self.undo)
         connect_if_present(self.window, ("actionRedo",), self.redo)
 
@@ -233,11 +234,37 @@ class ProjectEditor(QObject):
     def _launch_standalone(self, path=None):
         # Import here to avoid circular imports at module initialization.
         from Script_editor import ScriptEditor
-        editor = ScriptEditor(file_path=str(path) if path else None)
-        self.script_windows.append(editor)
-        editor.window.destroyed.connect(lambda *_args, obj=editor: self._forget_script_window(obj))
-        editor.show()
-        return editor
+        try:
+            editor = ScriptEditor(file_path=str(path) if path else None)
+            self.script_windows.append(editor)
+            editor.window.destroyed.connect(
+                lambda *_args, obj=editor: self._forget_script_window(obj)
+            )
+            editor.show()
+            return editor
+        except Exception as error:
+            QMessageBox.critical(
+                self.window,
+                "Could Not Open Python Script",
+                f"PyForge could not open the standalone script editor.\n\n{error}",
+            )
+            return None
+
+    def new_python_application(self):
+        # Import locally because Project_Creator imports ProjectEditor itself.
+        from Project_Creator import ProjectCreator
+        try:
+            creator = ProjectCreator()
+            if not hasattr(self, "project_creators"):
+                self.project_creators = []
+            self.project_creators.append(creator)
+            creator.show()
+        except Exception as error:
+            QMessageBox.critical(
+                self.window,
+                "Project Creator Failed",
+                f"Could not open the project creation window.\n\n{error}",
+            )
 
     def _forget_script_window(self, editor):
         try:
