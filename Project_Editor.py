@@ -25,6 +25,7 @@ from Core.project_format import (
     find_project_manifest,
     load_project_manifest,
 )
+from Core.window_registry import retain_window
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -52,13 +53,16 @@ def load_ui(ui_path: Path):
 
 
 def connect_if_present(window, names, callback):
-    """Connect the first matching QAction, supporting both old and new UI names."""
+    """Connect every available QAction alias without connecting one action twice."""
+    connected = []
+    seen = set()
     for name in names:
         action = getattr(window, name, None)
-        if action is not None:
+        if action is not None and id(action) not in seen:
             action.triggered.connect(callback)
-            return action
-    return None
+            connected.append(action)
+            seen.add(id(action))
+    return connected[0] if connected else None
 
 
 class ProjectEditor(QObject):
@@ -96,6 +100,8 @@ class ProjectEditor(QObject):
         self._closing = False
 
         self.window = load_ui(BASE_DIR / "ProjectWindow.ui")
+        self.window.installEventFilter(self)
+        self.window.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         project_name = self.project_config.get("name", self.project_root.name)
         self.window.setWindowTitle(f"PyForge Project - {project_name}")
 
@@ -126,6 +132,7 @@ class ProjectEditor(QObject):
         connect_if_present(self.window, ("actionOpen", "actionPython_Script"), self.open_standalone_dialog)
         connect_if_present(self.window, ("actionPython_Projet", "actionPython_Project"), self.open_project_dialog)
         connect_if_present(self.window, ("actionNewPS",), self.new_standalone_script)
+        connect_if_present(self.window, ("actionNew_PA", "actionNewProject", "actionNewPythonApplication", "actionNewPythonProject"), self.new_python_application)
         connect_if_present(self.window, ("actionUndo",), self.undo)
         connect_if_present(self.window, ("actionRedo",), self.redo)
 
@@ -233,16 +240,53 @@ class ProjectEditor(QObject):
     def _launch_standalone(self, path=None):
         # Import here to avoid circular imports at module initialization.
         from Script_editor import ScriptEditor
-        editor = ScriptEditor(file_path=str(path) if path else None)
-        self.script_windows.append(editor)
-        editor.window.destroyed.connect(lambda *_args, obj=editor: self._forget_script_window(obj))
-        editor.show()
-        return editor
+        try:
+            editor = ScriptEditor(file_path=str(path) if path else None)
+            self.script_windows.append(editor)
+            retain_window(editor)
+            editor.window.destroyed.connect(
+                lambda *_args, obj=editor: self._forget_script_window(obj)
+            )
+            editor.show()
+            return editor
+        except Exception as error:
+            QMessageBox.critical(
+                self.window,
+                "Could Not Open Python Script",
+                f"PyForge could not open the standalone script editor.\n\n{error}",
+            )
+            return None
+
+    def new_python_application(self):
+        # Import locally because Project_Creator imports ProjectEditor itself.
+        from Project_Creator import ProjectCreator
+        try:
+            creator = ProjectCreator()
+            if not hasattr(self, "project_creators"):
+                self.project_creators = []
+            self.project_creators.append(creator)
+            retain_window(creator)
+            creator.window.destroyed.connect(
+                lambda *_args, obj=creator: self._forget_project_creator(obj)
+            )
+            creator.show()
+        except Exception as error:
+            QMessageBox.critical(
+                self.window,
+                "Project Creator Failed",
+                f"Could not open the project creation window.\n\n{error}",
+            )
 
     def _forget_script_window(self, editor):
         try:
             self.script_windows.remove(editor)
         except ValueError:
+            pass
+
+    def _forget_project_creator(self, creator):
+        try:
+            self.project_creators.remove(creator)
+        except (AttributeError, ValueError):
             pass
 
     def new_standalone_script(self):
@@ -277,7 +321,7 @@ class ProjectEditor(QObject):
             self.window,
             "Open PyForge Project",
             str(self.project_root),
-            "PyForge Projects (*.forproj);;Legacy Project Metadata (pyforge.json)",
+            "PyForge Projects (*.forproj);;Legacy Project Metadata (*.json);;All Files (*)",
         )
         if not path:
             return
@@ -290,6 +334,7 @@ class ProjectEditor(QObject):
         if not hasattr(self, "project_windows"):
             self.project_windows = []
         self.project_windows.append(editor)
+        retain_window(editor)
         editor.window.destroyed.connect(lambda *_args, obj=editor: self._forget_project_window(obj))
         editor.show()
 
@@ -504,6 +549,21 @@ class ProjectEditor(QObject):
             self._terminal_write(f"Could not start terminal: {self.terminal_process.errorString()}\n")
 
     def eventFilter(self, watched, event):
+        if watched is self.window and event.type() == QEvent.Type.Close:
+            self._closing = True
+            tabs = self.window.MainEditorTabs
+            for index in reversed(range(tabs.count())):
+                tab = tabs.widget(index)
+                self.close_tab(index)
+                if tabs.indexOf(tab) != -1:
+                    self._closing = False
+                    event.ignore()
+                    return True
+            for process in (self.process, self.terminal_process):
+                if process and process.state() != QProcess.ProcessState.NotRunning:
+                    process.kill()
+            return False
+
         if event.type() == QEvent.Type.KeyPress and event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
             if watched is self.window.Console:
                 if self.process and self.process.state() == QProcess.ProcessState.Running:
@@ -531,17 +591,4 @@ class ProjectEditor(QObject):
     def show(self):
         self.window.show()
 
-    def closeEvent(self, event):
-        self._closing = True
-        for index in reversed(range(self.window.MainEditorTabs.count())):
-            self.close_tab(index)
-            if self.window.MainEditorTabs.count() and self.window.MainEditorTabs.widget(index) is not None:
-                # close_tab was cancelled due unsaved changes
-                self._closing = False
-                event.ignore()
-                return
-        if self.process and self.process.state() != QProcess.ProcessState.NotRunning:
-            self.process.kill()
-        if self.terminal_process and self.terminal_process.state() != QProcess.ProcessState.NotRunning:
-            self.terminal_process.kill()
-        event.accept()
+

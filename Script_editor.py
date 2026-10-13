@@ -6,10 +6,11 @@ import sys
 from pathlib import Path
 
 from PySide6.QtCore import QFile, QEvent, QObject, QProcess, Qt
-from PySide6.QtWidgets import QFileDialog, QMessageBox
+from PySide6.QtWidgets import QFileDialog, QMessageBox, QPlainTextEdit, QTabWidget, QWidget
 from PySide6.QtUiTools import QUiLoader
 
 from python_code_editor import PythonCodeEditor
+from Core.window_registry import retain_window
 
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -43,27 +44,38 @@ def _load_script_ui():
 
 
 def _connect_if_present(window, names, callback):
+    """Connect all matching UI action aliases, avoiding duplicate connections."""
+    connected = []
+    seen = set()
     for name in names:
         action = getattr(window, name, None)
-        if action is not None:
+        if action is not None and id(action) not in seen:
             action.triggered.connect(callback)
-            return action
-    return None
+            connected.append(action)
+            seen.add(id(action))
+    return connected[0] if connected else None
 
 
 class ScriptEditor(QObject):
     def __init__(self, file_path=None):
         super().__init__()
         self.window = _load_script_ui()
+        self.window.installEventFilter(self)
+        self.window.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         self.editor = self.window.findChild(PythonCodeEditor, "CodeEditor")
         if self.editor is None:
             raise RuntimeError("Could not find CodeEditor in Script_editor.ui")
 
-        self.console = self.window.findChild(type(self.window.Console), "Console")
-        self.terminal = self.window.findChild(type(self.window.Terminal), "Terminal")
-        self.problems = self.window.findChild(type(self.window.problems), "problems")
-        if self.console is None or self.terminal is None or self.problems is None:
-            raise RuntimeError("Script editor UI is missing Console, Terminal, or problems widget")
+        # Resolve child widgets by Qt object name instead of dynamic attributes.
+        self.console = self.window.findChild(QPlainTextEdit, "Console")
+        self.terminal = self.window.findChild(QPlainTextEdit, "Terminal")
+        self.problems = self.window.findChild(QPlainTextEdit, "problems")
+        self.statusbar = self.window.statusBar()
+        self.terminal_tabs = self.window.findChild(QTabWidget, "TerminalTabWidget")
+        self.problems_tab = self.window.findChild(QWidget, "ProblemsTab")
+        self.console_tab = self.window.findChild(QWidget, "ConsoleTab")
+        if any(widget is None for widget in (self.console, self.terminal, self.problems, self.terminal_tabs, self.problems_tab, self.console_tab)):
+            raise RuntimeError("Script_editor.ui is missing a required console, terminal, or tab widget.")
 
         self.current_file = None
         self._dirty = False
@@ -80,6 +92,7 @@ class ScriptEditor(QObject):
         _connect_if_present(self.window, ("actionRun",), self.run_script)
         _connect_if_present(self.window, ("actionStop",), self.stop_script)
         _connect_if_present(self.window, ("actionNewPS",), self.new_standalone_script)
+        _connect_if_present(self.window, ("actionNew_PA", "actionNewProject", "actionNewPythonApplication", "actionNewPythonProject"), self.new_python_application)
         _connect_if_present(self.window, ("actionPython_Project", "actionPython_Projet"), self.open_project_dialog)
         _connect_if_present(self.window, ("actionUndo",), self.editor.undo)
         _connect_if_present(self.window, ("actionRedo",), self.editor.redo)
@@ -123,7 +136,7 @@ class ScriptEditor(QObject):
         self.current_file = path
         self._dirty = False
         self._update_title()
-        self.window.statusbar.showMessage(f"Opened {path}", 4000)
+        self.statusbar.showMessage(f"Opened {path}", 4000)
         return True
 
     def open_file_dialog(self):
@@ -165,7 +178,7 @@ class ScriptEditor(QObject):
         self._dirty = False
         self.editor.document().setModified(False)
         self._update_title()
-        self.window.statusbar.showMessage(f"Saved {path}", 4000)
+        self.statusbar.showMessage(f"Saved {path}", 4000)
         return True
 
     def _confirm_discard_or_save(self):
@@ -210,10 +223,40 @@ class ScriptEditor(QObject):
         self._open_child_script_editor(target)
 
     def _open_child_script_editor(self, path):
-        child = ScriptEditor(file_path=str(path))
-        self._child_windows.append(child)
-        child.window.destroyed.connect(lambda *_args, obj=child: self._forget_child(obj))
-        child.show()
+        try:
+            child = ScriptEditor(file_path=str(path))
+            self._child_windows.append(child)
+            retain_window(child)
+            child.window.destroyed.connect(
+                lambda *_args, obj=child: self._forget_child(obj)
+            )
+            child.show()
+            return child
+        except Exception as error:
+            QMessageBox.critical(
+                self.window,
+                "Could Not Open Python Script",
+                f"PyForge could not open the standalone script editor.\n\n{error}",
+            )
+            return None
+
+    def new_python_application(self):
+        # Import locally to avoid the ProjectCreator/ProjectEditor import cycle.
+        from Project_Creator import ProjectCreator
+        try:
+            creator = ProjectCreator()
+            self._child_windows.append(creator)
+            retain_window(creator)
+            creator.window.destroyed.connect(
+                lambda *_args, obj=creator: self._forget_child(obj)
+            )
+            creator.show()
+        except Exception as error:
+            QMessageBox.critical(
+                self.window,
+                "Project Creator Failed",
+                f"Could not open the project creation window.\n\n{error}",
+            )
 
     def _forget_child(self, child):
         try:
@@ -222,18 +265,24 @@ class ScriptEditor(QObject):
             pass
 
     def open_project_dialog(self):
-        folder = QFileDialog.getExistingDirectory(self.window, "Open Python Project", str(Path.home()))
-        if not folder:
+        project_path, _ = QFileDialog.getOpenFileName(
+            self.window,
+            "Open PyForge Project",
+            str(self.current_file.parent if self.current_file else Path.home()),
+            "PyForge Projects (*.forproj);;Legacy Project Metadata (*.json);;All Files (*)",
+        )
+        if not project_path:
             return
         from Project_Editor import ProjectEditor
         try:
-            child = ProjectEditor(folder)
+            child = ProjectEditor(project_path)
         except Exception as error:
             QMessageBox.critical(self.window, "Open Project Failed", str(error))
             return
         if not hasattr(self, "_project_windows"):
             self._project_windows = []
         self._project_windows.append(child)
+        retain_window(child)
         child.window.destroyed.connect(lambda *_args, obj=child: self._forget_project(obj))
         child.show()
 
@@ -264,14 +313,14 @@ class ScriptEditor(QObject):
             ast.parse(self.editor.toPlainText(), filename=str(self.current_file))
         except SyntaxError as error:
             self.problems.setPlainText(f"Line {error.lineno}, column {error.offset}: {error.msg}")
-            self.window.TerminalTabWidget.setCurrentWidget(self.window.ProblemsTab)
+            self.terminal_tabs.setCurrentWidget(self.problems_tab)
             return
         if self.process and self.process.state() != QProcess.ProcessState.NotRunning:
             self._terminal_write("A script is already running. Stop it first.\n")
             return
         self.console.clear()
         self._console_input_start = 0
-        self.window.TerminalTabWidget.setCurrentWidget(self.window.ConsoleTab)
+        self.terminal_tabs.setCurrentWidget(self.console_tab)
         process = QProcess(self)
         self.process = process
         process.setProgram(self._python_executable())
@@ -296,7 +345,7 @@ class ScriptEditor(QObject):
             text = bytes(self.process.readAllStandardError()).decode("utf-8", errors="replace")
             if text:
                 self.problems.appendPlainText(text.rstrip("\n"))
-                self.window.TerminalTabWidget.setCurrentWidget(self.window.ProblemsTab)
+                self.terminal_tabs.setCurrentWidget(self.problems_tab)
 
     def _process_finished(self, exit_code, exit_status):
         message = f"Process finished with exit code {exit_code}.\n" if exit_status == QProcess.ExitStatus.NormalExit else "Process crashed.\n"
@@ -358,6 +407,13 @@ class ScriptEditor(QObject):
             self._terminal_write(f"Could not start terminal: {self.terminal_process.errorString()}\n")
 
     def eventFilter(self, watched, event):
+        if watched is self.window and event.type() == QEvent.Type.Close:
+            if not self._confirm_discard_or_save():
+                event.ignore()
+                return True
+            self._cleanup_processes()
+            return False
+
         if event.type() == QEvent.Type.KeyPress and event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
             if watched is self.console and self.process and self.process.state() == QProcess.ProcessState.Running:
                 cursor = self.console.textCursor()
@@ -388,18 +444,4 @@ class ScriptEditor(QObject):
             if process and process.state() != QProcess.ProcessState.NotRunning:
                 process.kill()
 
-    def closeEvent(self, event):
-        if self._dirty:
-            answer = QMessageBox.question(
-                self.window, "Unsaved Changes", "Save changes before closing?",
-                QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel,
-                QMessageBox.StandardButton.Save,
-            )
-            if answer == QMessageBox.StandardButton.Cancel:
-                event.ignore()
-                return
-            if answer == QMessageBox.StandardButton.Save and not self.save_file():
-                event.ignore()
-                return
-        self._cleanup_processes()
-        event.accept()
+

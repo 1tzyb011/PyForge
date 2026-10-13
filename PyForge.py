@@ -8,6 +8,7 @@ from PySide6.QtWidgets import QApplication, QMessageBox
 from Project_Creator import ProjectCreator
 from Project_Editor import ProjectEditor
 from Script_editor import ScriptEditor
+from Core.window_registry import retain_window
 
 
 def main():
@@ -39,6 +40,7 @@ def main():
         QMessageBox.critical(None, "PyForge Could Not Open the File", str(exc))
         return 1
 
+    retain_window(controller)
     app._pyforge_controller = controller
     return app.exec()
 
