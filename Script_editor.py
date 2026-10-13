@@ -386,7 +386,14 @@ class ScriptEditor(QObject):
         process = QProcess(self)
         self.terminal_process = process
         process.setProgram(shell)
-        process.setArguments(["/Q"] if os.name == "nt" else ["-i"])
+        if os.name == "nt":
+            process.setArguments(["/Q"])
+        elif Path(shell).name == "bash":
+            # Do not load arbitrary interactive shell plugins during startup.
+            # Slow prompt managers or shell hooks can make the editor appear frozen.
+            process.setArguments(["--noprofile", "--norc", "-i"])
+        else:
+            process.setArguments(["-i"])
         process.setWorkingDirectory(str(self.current_file.parent if self.current_file else Path.home()))
         process.setProcessChannelMode(QProcess.ProcessChannelMode.SeparateChannels)
         process.readyReadStandardOutput.connect(self._read_terminal_output)
