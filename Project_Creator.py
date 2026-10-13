@@ -401,7 +401,7 @@ class ProjectCreator(QObject):
             )
                 # Open the newly created project.
         self.project_editor = ProjectEditor(
-            project_path=result["destination"]
+            project_path=result["project_file"]
         )
         self.project_editor.show()
 
