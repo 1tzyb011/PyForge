@@ -20,6 +20,11 @@ from PySide6.QtWidgets import (
 from PySide6.QtUiTools import QUiLoader
 
 from python_code_editor import PythonCodeEditor
+from Core.project_format import (
+    ProjectFormatError,
+    find_project_manifest,
+    load_project_manifest,
+)
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -59,10 +64,29 @@ def connect_if_present(window, names, callback):
 class ProjectEditor(QObject):
     def __init__(self, project_path=None):
         super().__init__()
-        root = Path(project_path or Path.cwd()).expanduser().resolve()
-        if not root.exists() or not root.is_dir():
-            raise NotADirectoryError(f"Project folder does not exist: {root}")
+        requested_path = Path(project_path or Path.cwd()).expanduser().resolve()
+        self.project_file = None
+        self.project_config = {}
+
+        if not requested_path.exists():
+            raise FileNotFoundError(f"Project path does not exist: {requested_path}")
+        if requested_path.is_file():
+            if requested_path.suffix.lower() != ".forproj" and requested_path.name.lower() != "pyforge.json":
+                raise ValueError("Open a .forproj project file or a legacy pyforge.json manifest.")
+            self.project_file = requested_path
+            self.project_config = load_project_manifest(requested_path)
+            root = requested_path.parent
+        elif requested_path.is_dir():
+            root = requested_path
+            self.project_file = find_project_manifest(root)
+            if self.project_file is not None:
+                self.project_config = load_project_manifest(self.project_file)
+        else:
+            raise ValueError(f"Unsupported project path: {requested_path}")
+
         self.project_root = root
+        self.entry_point = self.project_config.get("entry_point", "main.py")
+        self.configured_interpreter = self.project_config.get("interpreter", "")
         self.open_files = {}              # resolved path string -> tab widget
         self.script_windows = []          # keep standalone windows alive
         self.process = None
@@ -72,7 +96,8 @@ class ProjectEditor(QObject):
         self._closing = False
 
         self.window = load_ui(BASE_DIR / "ProjectWindow.ui")
-        self.window.setWindowTitle(f"PyForge Project - {self.project_root.name}")
+        project_name = self.project_config.get("name", self.project_root.name)
+        self.window.setWindowTitle(f"PyForge Project - {project_name}")
 
         self._connect_actions()
         self._setup_project_tree()
@@ -81,7 +106,11 @@ class ProjectEditor(QObject):
         self.window.Terminal.installEventFilter(self)
         self._start_terminal()
 
-        main_file = self.project_root / "main.py"
+        main_file = (self.project_root / self.entry_point).resolve()
+        try:
+            main_file.relative_to(self.project_root.resolve())
+        except ValueError as exc:
+            raise ProjectFormatError("The configured entry point escapes the project directory.") from exc
         if main_file.is_file():
             self.open_project_file(main_file)
         else:
@@ -244,13 +273,16 @@ class ProjectEditor(QObject):
         self._launch_standalone(target)
 
     def open_project_dialog(self):
-        folder = QFileDialog.getExistingDirectory(
-            self.window, "Open Python Project", str(self.project_root)
+        path, _ = QFileDialog.getOpenFileName(
+            self.window,
+            "Open PyForge Project",
+            str(self.project_root),
+            "PyForge Projects (*.forproj);;Legacy Project Metadata (pyforge.json)",
         )
-        if not folder:
+        if not path:
             return
         try:
-            editor = ProjectEditor(folder)
+            editor = ProjectEditor(path)
         except Exception as error:
             QMessageBox.critical(self.window, "Open Project Failed", str(error))
             return
@@ -351,6 +383,9 @@ class ProjectEditor(QObject):
         for candidate in candidates:
             if candidate.is_file():
                 return str(candidate)
+        configured = Path(self.configured_interpreter).expanduser() if self.configured_interpreter else None
+        if configured is not None and configured.is_file():
+            return str(configured.resolve())
         return sys.executable
 
     def run_current_file(self):
