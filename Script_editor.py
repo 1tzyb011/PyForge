@@ -44,12 +44,16 @@ def _load_script_ui():
 
 
 def _connect_if_present(window, names, callback):
+    """Connect all matching UI action aliases, avoiding duplicate connections."""
+    connected = []
+    seen = set()
     for name in names:
         action = getattr(window, name, None)
-        if action is not None:
+        if action is not None and id(action) not in seen:
             action.triggered.connect(callback)
-            return action
-    return None
+            connected.append(action)
+            seen.add(id(action))
+    return connected[0] if connected else None
 
 
 class ScriptEditor(QObject):
