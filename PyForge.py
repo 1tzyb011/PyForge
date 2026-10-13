@@ -5,7 +5,7 @@ from pathlib import Path
 
 from PySide6.QtWidgets import QApplication, QMessageBox
 
-from Core.diagnostics import install_diagnostics, log_event
+from Core.diagnostics import install_diagnostics, log_event, start_ui_freeze_watchdog
 from Core.window_registry import retain_window
 
 
@@ -17,6 +17,7 @@ def main():
     from Script_editor import ScriptEditor
 
     app = QApplication([sys.argv[0]])
+    start_ui_freeze_watchdog(app)
     app_dir = Path(__file__).resolve().parent
     qss_path = app_dir / "dark.qss"
     if qss_path.is_file():
