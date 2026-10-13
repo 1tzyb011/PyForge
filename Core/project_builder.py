@@ -43,6 +43,10 @@ def build_project(destination, project_name, interpreter, create_venv=False):
             "Run main.py with your Python interpreter.\n"
         ),
         ".gitignore": ".venv/\n__pycache__/\n*.py[cod]\n.idea/\n.vscode/\n",
+        "requirements.txt": (
+            "# Add your project dependencies here.\n"
+            "# Just write the exact package names and versions in correct cases and spellings\n"
+        ),
     }
     metadata_path = destination / f"{project_name}.forproj"
     metadata = {

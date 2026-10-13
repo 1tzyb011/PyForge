@@ -60,18 +60,32 @@ def connect_if_present(window, names, callback):
 class ProjectEditor(QObject):
     def __init__(self, project_path=None):
         super().__init__()
+
         root = Path(project_path or Path.cwd()).expanduser().resolve()
+
+        # Accept a project directory or a project manifest file.
+        if root.is_file() and (
+            root.suffix.lower() == ".forproj"
+            or root.name.lower() == "pyforge.json"
+        ):
+            root = root.parent
+
         if not root.exists() or not root.is_dir():
-            raise NotADirectoryError(f"Project folder does not exist: {root}")
+            raise NotADirectoryError(
+                f"Project folder does not exist: {root}"
+            )
 
         self.project_root = root
-        self.open_files = {}  # resolved path string -> tab widget
-        self.script_windows = []  # keep standalone windows alive
+        self.open_files = {}
+        self.script_windows = []
         self.process = None
         self.terminal_process = None
         self._terminal_input_start = 0
         self._console_input_start = 0
         self._closing = False
+
+        
+
 
         self.window = load_ui(BASE_DIR / "ProjectWindow.ui")
         self.window.setWindowTitle(f"PyForge Project - {self.project_root.name}")
