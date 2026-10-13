@@ -358,6 +358,17 @@ class ProjectEditor(QObject):
             QMessageBox.critical(self.window, "Open Project Failed", str(error))
             return False
 
+        new_entry_point = project_config.get("entry_point", "main.py")
+        new_main_file = (project_root / new_entry_point).resolve()
+        try:
+            new_main_file.relative_to(project_root.resolve())
+        except ValueError:
+            QMessageBox.critical(
+                self.window, "Invalid Project Entry Point",
+                "The configured entry point must stay inside the project directory.",
+            )
+            return False
+
         tabs = self.window.MainEditorTabs
         # Resolve every dirty tab before changing project state. A cancel keeps
         # the current project and its tabs open.
@@ -398,7 +409,7 @@ class ProjectEditor(QObject):
         self.project_file = project_file
         self.project_config = project_config
         self.project_root = project_root
-        self.entry_point = project_config.get("entry_point", "main.py")
+        self.entry_point = new_entry_point
         self.configured_interpreter = project_config.get("interpreter", "")
 
         project_name = project_config.get("name", project_root.name)
@@ -406,20 +417,9 @@ class ProjectEditor(QObject):
         source_root = self.file_model.setRootPath(str(project_root))
         self.window.treeView.setRootIndex(self.tree_filter.mapFromSource(source_root))
 
-        main_file = (project_root / self.entry_point).resolve()
-        try:
-            main_file.relative_to(project_root.resolve())
-        except ValueError:
-            QMessageBox.critical(
-                self.window, "Invalid Project Entry Point",
-                "The configured entry point must stay inside the project directory.",
-            )
-            self._create_tab(None, "")
-            return False
-
         self._start_terminal()
-        if main_file.is_file():
-            self.open_project_file(main_file)
+        if new_main_file.is_file():
+            self.open_project_file(new_main_file)
         else:
             self._create_tab(None, "")
         self._terminal_write(f"PyForge project opened: {project_root}\n")
