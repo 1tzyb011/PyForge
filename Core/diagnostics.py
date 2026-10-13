@@ -8,6 +8,7 @@ import faulthandler
 import os
 import sys
 import threading
+import time
 import traceback
 from datetime import datetime
 from pathlib import Path
@@ -15,6 +16,7 @@ from pathlib import Path
 _LOG_HANDLE = None
 _INSTALLED = False
 _PREVIOUS_EXCEPTHOOK = None
+_WATCHDOG_STARTED = False
 
 
 def _log_path():
@@ -46,6 +48,39 @@ def log_exception(context, exception):
     except Exception:
         pass
 
+
+def start_ui_freeze_watchdog(app, stale_after=4.0):
+    """Dump Python stacks if Qt stops processing GUI events."""
+    global _WATCHDOG_STARTED
+    if _WATCHDOG_STARTED:
+        return
+    from PySide6.QtCore import QTimer
+    heartbeat = {'last': time.monotonic()}
+    timer = QTimer(app)
+    timer.setInterval(250)
+    timer.timeout.connect(lambda: heartbeat.__setitem__('last', time.monotonic()))
+    timer.start()
+
+    def monitor():
+        reported = False
+        while True:
+            time.sleep(1.0)
+            stale = time.monotonic() - heartbeat['last'] >= stale_after
+            if stale and not reported:
+                log_event(f"GUI FREEZE SUSPECTED: Qt heartbeat stopped for at least {stale_after:.1f} seconds; dumping all Python thread stacks.")
+                if _LOG_HANDLE is not None:
+                    try:
+                        faulthandler.dump_traceback(file=_LOG_HANDLE, all_threads=True)
+                        _LOG_HANDLE.flush()
+                    except Exception as error:
+                        log_event(f"Could not dump freeze stack: {error!r}")
+                reported = True
+            elif not stale:
+                reported = False
+
+    threading.Thread(target=monitor, name='PyForgeFreezeWatchdog', daemon=True).start()
+    _WATCHDOG_STARTED = True
+    log_event(f"GUI freeze watchdog enabled (threshold={stale_after:.1f}s)")
 
 def install_diagnostics():
     """Install process-wide Python and native-crash logging once per process."""
