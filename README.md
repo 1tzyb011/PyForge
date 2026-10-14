@@ -4,7 +4,7 @@ PyForge is a lightweight Python IDE built with Python and PySide6. It is in alph
 
 ## Run from source
 
-1. Install Python 3.10 or newer.
+1. Install Python 3.11 or newer.
 2. Install the dependency:
 
    ```bash
