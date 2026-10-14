@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtUiTools import QUiLoader
 
 from python_code_editor import PythonCodeEditor
+from Core.window_registry import retain_window, switch_window
 
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -272,14 +273,32 @@ class ProjectEditor(QObject):
             self._launch_standalone(Path(path))
 
     def _launch_standalone(self, path=None):
-        # Import here to avoid circular imports at module initialization.
+        # Script Editor is a separate window for standalone .py files only.
         from Script_editor import ScriptEditor
+        from Core.diagnostics import log_exception
 
-        editor = ScriptEditor(file_path=str(path) if path else None)
-        self.script_windows.append(editor)
-        editor.window.destroyed.connect(lambda *_args, obj=editor: self._forget_script_window(obj))
-        editor.show()
-        return editor
+        try:
+            editor = ScriptEditor(file_path=str(path) if path else None)
+            retain_window(editor)
+            self.script_windows.append(editor)
+            editor.window.destroyed.connect(
+                lambda *_args, obj=editor: self._forget_script_window(obj)
+            )
+            if not switch_window(self, editor):
+                return None
+            return editor
+        except Exception as error:
+            log_exception(
+                f"Could not open standalone script {path or '<untitled>'}",
+                error,
+            )
+            QMessageBox.critical(
+                self.window,
+                "Could Not Open Standalone Script",
+                "PyForge could not open this standalone Python script.\n\n"
+                f"{error}",
+            )
+            return None
 
     def _forget_script_window(self, editor):
         try:
