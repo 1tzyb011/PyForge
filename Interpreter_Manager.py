@@ -32,9 +32,8 @@ class InterpreterManager(QObject):
     def __init__(self):
         super().__init__()
 
-        self.window = self.load_ui(
-            "Interpreter_Manager.ui"
-        )
+        ui_path = Path(__file__).resolve().parent / "UI" / "Interpreter_Manager.ui"
+        self.window = self.load_ui(str(ui_path))
 
         if self.window is None:
             raise RuntimeError(
