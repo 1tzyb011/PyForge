@@ -59,6 +59,25 @@ def _connect_if_present(window, names, callback):
 class ScriptEditor(QObject):
     def __init__(self, file_path=None):
         super().__init__()
+
+        # Script Editor is for standalone Python files, not project manifests.
+        validated_path = None
+        if file_path is not None:
+            validated_path = Path(file_path).expanduser().resolve()
+            if validated_path.suffix.lower() != ".py":
+                raise ValueError(
+                    "Script Editor only opens standalone Python (.py) files. "
+                    "Open project manifests and project folders in Project Editor."
+                )
+            if not validated_path.exists():
+                raise FileNotFoundError(
+                    f"The Python script does not exist:\n{validated_path}"
+                )
+            if not validated_path.is_file():
+                raise IsADirectoryError(
+                    f"Expected a Python script file, not a directory:\n{validated_path}"
+                )
+
         self.window = _load_script_ui()
         self.window.installEventFilter(self)
         self.window.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
@@ -102,8 +121,8 @@ class ScriptEditor(QObject):
         self.terminal.installEventFilter(self)
         self.window.destroyed.connect(self._cleanup_processes)
 
-        if file_path:
-            self.load_file(file_path)
+        if validated_path is not None and not self.load_file(validated_path):
+            raise OSError(f"Could not load standalone script: {validated_path}")
         self._start_terminal()
         self._update_title()
 
@@ -142,7 +161,7 @@ class ScriptEditor(QObject):
     def open_file_dialog(self):
         path, _ = QFileDialog.getOpenFileName(
             self.window, "Open Python Script", str(self.current_file.parent if self.current_file else Path.home()),
-            "Python Files (*.py);;All Files (*)",
+            "Python Files (*.py)",
         )
         if path:
             if self._confirm_discard_or_save() and self.load_file(path):
