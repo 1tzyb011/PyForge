@@ -10,19 +10,30 @@ import shutil
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QFile, QDir, QEvent, QObject, QProcess, Qt
+from PySide6.QtCore import QFile, QDir, QEvent, QObject, QProcess, QSortFilterProxyModel, Qt
 from PySide6.QtWidgets import (
     QFileDialog,
     QFileSystemModel,
     QMessageBox,
     QVBoxLayout,
     QWidget,
+    
 )
 from PySide6.QtUiTools import QUiLoader
 
 from python_code_editor import PythonCodeEditor
 
 BASE_DIR = Path(__file__).resolve().parent
+
+TEXT_FILE_EXTENSIONS = {
+    ".py", ".txt", ".md", ".rst",
+    ".json", ".toml", ".yaml", ".yml",
+    ".xml", ".csv", ".tsv",
+    ".ini", ".cfg", ".conf",
+    ".html", ".htm", ".css", ".js",
+    ".ts", ".sql", ".sh", ".bat",
+    ".gitignore", ".env.example",
+}
 
 
 def load_ui(ui_path: Path):
@@ -119,16 +130,33 @@ class ProjectEditor(QObject):
         connect_if_present(self.window, ("actionUndo",), self.undo)
         connect_if_present(self.window, ("actionRedo",), self.redo)
 
+   
     def _setup_project_tree(self):
         self.file_model = QFileSystemModel(self)
-        self.file_model.setFilter(QDir.Filter.AllEntries | QDir.Filter.NoDotAndDotDot)
+        self.file_model.setFilter(
+            QDir.Filter.AllEntries | QDir.Filter.NoDotAndDotDot
+        )
         self.file_model.setRootPath(str(self.project_root))
 
+        self.proxy_model = QSortFilterProxyModel(self)
+        self.proxy_model.setSourceModel(self.file_model)
+        self.proxy_model.setFilterRegularExpression(
+            r"^(?!.*\.forproj$).*$"
+        )
+        self.proxy_model.setFilterKeyColumn(0)
+        self.proxy_model.setRecursiveFilteringEnabled(True)
+
         tree = self.window.treeView
-        tree.setModel(self.file_model)
-        tree.setRootIndex(self.file_model.index(str(self.project_root)))
+        tree.setModel(self.proxy_model)
+        tree.setRootIndex(
+            self.proxy_model.mapFromSource(
+                self.file_model.index(str(self.project_root))
+            )
+        )
+
         for column in range(1, self.file_model.columnCount()):
             tree.hideColumn(column)
+
         tree.doubleClicked.connect(self._on_tree_double_click)
 
     def _setup_tabs(self):
@@ -217,10 +245,23 @@ class ProjectEditor(QObject):
             return
         self._create_tab(path, content)
 
+    
     def _on_tree_double_click(self, index):
-        path = Path(self.file_model.filePath(index))
-        if path.is_file() and path.suffix.lower() == ".py":
+        source_index = self.proxy_model.mapToSource(index)
+        path = Path(self.file_model.filePath(source_index))
+
+        if not path.is_file():
+            return
+
+        if path.suffix.lower() in TEXT_FILE_EXTENSIONS or path.name in {
+            ".gitignore",
+            ".env",
+            "Dockerfile",
+            "Makefile",
+            "requirements.txt",
+        }:
             self.open_project_file(path)
+
 
     def open_standalone_dialog(self):
         path, _ = QFileDialog.getOpenFileName(
