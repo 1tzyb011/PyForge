@@ -19,7 +19,7 @@ BASE_DIR = Path(__file__).resolve().parent
 
 def _load_script_ui():
     # Linux paths are case-sensitive. Support both historical spellings.
-    candidates = (BASE_DIR / "Script_editor.ui", BASE_DIR / "Script_Editor.ui")
+    candidates = (BASE_DIR / "UI" / "Script_editor.ui", BASE_DIR / "UI" / "Script_Editor.ui")
     ui_path = next((path for path in candidates if path.is_file()), None)
     if ui_path is None:
         raise FileNotFoundError(
