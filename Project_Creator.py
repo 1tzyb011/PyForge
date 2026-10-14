@@ -76,7 +76,6 @@ class ProjectCreator(QObject):
     def load_ui(self):
         candidates = [
             APP_DIR / "UI" / "Project_Creator.ui",
-            APP_DIR / "Project_Creator.ui",
         ]
 
         ui_path = next(
