@@ -12,6 +12,7 @@ from PySide6.QtUiTools import QUiLoader
 
 from python_code_editor import PythonCodeEditor
 from Core.window_registry import retain_window, switch_window
+from Core.action_icons import apply_action_icons
 
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -80,6 +81,7 @@ class ScriptEditor(QObject):
                 )
 
         self.window = _load_script_ui()
+        apply_action_icons(self.window)
         self.window.installEventFilter(self)
         self.window.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         self.editor = self.window.findChild(PythonCodeEditor, "CodeEditor")
