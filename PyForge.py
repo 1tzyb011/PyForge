@@ -7,6 +7,7 @@ from PySide6.QtWidgets import QApplication, QMessageBox
 
 from Core.diagnostics import install_diagnostics, log_event, start_ui_freeze_watchdog
 from Core.window_registry import retain_window
+from pyforge_theme.load_theme import apply_theme, apply_icons
 
 
 def main():
@@ -18,10 +19,9 @@ def main():
 
     app = QApplication([sys.argv[0]])
     start_ui_freeze_watchdog(app)
-    app_dir = Path(__file__).resolve().parent
-    qss_path = app_dir / "dark.qss"
-    if qss_path.is_file():
-        app.setStyleSheet(qss_path.read_text(encoding="utf-8"))
+    from pyforge_theme.load_theme import apply_theme
+    apply_theme(app)
+    apply_icons(app)
 
     target = Path(sys.argv[1]).expanduser() if len(sys.argv) > 1 else None
     log_event(f"Launch target: {str(target) if target is not None else '<empty>'}")

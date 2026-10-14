@@ -4,6 +4,7 @@ import ast
 import os
 import sys
 from pathlib import Path
+import shutil
 
 from PySide6.QtCore import QFile, QEvent, QObject, QProcess, Qt
 from PySide6.QtWidgets import QFileDialog, QMessageBox, QPlainTextEdit, QTabWidget, QWidget
@@ -214,32 +215,55 @@ class ScriptEditor(QObject):
             return self.save_file()
         return True
 
+    
     def new_standalone_script(self):
-        path, _ = QFileDialog.getSaveFileName(
-            self.window, "Create Standalone Python Script", str(Path.home() / "untitled.py"),
-            "Python Files (*.py);;All Files (*)",
-        )
-        if not path:
-            return
-        target = Path(path).expanduser().resolve()
-        if target.suffix.lower() != ".py":
-            target = target.with_suffix(".py")
-        if target.exists():
-            answer = QMessageBox.question(
-                self.window, "File Exists", f"{target.name} already exists. Open it?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.Yes,
+        from Core.diagnostics import log_exception
+
+        try:
+            path, _ = QFileDialog.getSaveFileName(
+                self.window,
+                "Create Standalone Python Script",
+                str(Path.home() / "untitled.py"),
+                "Python Files (*.py);;All Files (*)",
             )
-            if answer != QMessageBox.StandardButton.Yes:
+
+            if not path:
                 return
-        else:
-            try:
+
+            target = Path(path).expanduser().resolve()
+
+            if target.suffix.lower() != ".py":
+                target = target.with_suffix(".py")
+
+            if target.exists():
+                answer = QMessageBox.question(
+                    self.window,
+                    "File Exists",
+                    f"{target.name} already exists. Open it?",
+                    QMessageBox.StandardButton.Yes
+                    | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.Yes,
+                )
+
+                if answer != QMessageBox.StandardButton.Yes:
+                    return
+            else:
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.touch(exist_ok=False)
-            except OSError as error:
-                QMessageBox.critical(self.window, "Create Failed", str(error))
-                return
-        self._open_child_script_editor(target)
+
+            self._open_child_script_editor(target)
+
+        except Exception as error:
+            log_exception(
+                "Failed to create or open a standalone Python script",
+                error,
+            )
+            QMessageBox.critical(
+                self.window,
+                "Create Script Failed",
+                "PyForge could not create or open the Python script.\n\n"
+                f"{type(error).__name__}: {error}",
+            )
 
     def _open_child_script_editor(self, path):
         try:
@@ -406,21 +430,40 @@ class ScriptEditor(QObject):
         self.terminal.ensureCursorVisible()
         self._terminal_input_start = len(self.terminal.toPlainText())
 
+    
     def _start_terminal(self):
-        shell = os.environ.get("COMSPEC", "cmd.exe") if os.name == "nt" else os.environ.get("SHELL", "/bin/bash")
+        if (
+            self.terminal_process
+            and self.terminal_process.state() != QProcess.ProcessState.NotRunning
+        ):
+            return
+
         process = QProcess(self)
         self.terminal_process = process
-        process.setProgram(shell)
+
         if os.name == "nt":
+            process.setProgram(os.environ.get("COMSPEC", "cmd.exe"))
             process.setArguments(["/Q"])
-        elif Path(shell).name == "bash":
-            # Do not load arbitrary interactive shell plugins during startup.
-            # Slow prompt managers or shell hooks can make the editor appear frozen.
-            process.setArguments(["--noprofile", "--norc", "-i"])
         else:
-            process.setArguments(["-i"])
-        process.setWorkingDirectory(str(self.current_file.parent if self.current_file else Path.home()))
-        process.setProcessChannelMode(QProcess.ProcessChannelMode.SeparateChannels)
+            shell = os.environ.get("SHELL", "/bin/bash")
+            setsid = shutil.which("setsid")
+
+            if setsid:
+                process.setProgram(setsid)
+                process.setArguments([shell])
+            else:
+                process.setProgram(shell)
+                process.setArguments([])
+
+        working_dir = (
+            str(self.current_file.parent)
+            if self.current_file
+            else str(Path.home())
+        )
+        process.setWorkingDirectory(working_dir)
+        process.setProcessChannelMode(
+            QProcess.ProcessChannelMode.SeparateChannels
+        )
         process.readyReadStandardOutput.connect(self._read_terminal_output)
         process.readyReadStandardError.connect(self._read_terminal_output)
         process.errorOccurred.connect(self._terminal_error)
