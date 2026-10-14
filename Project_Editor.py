@@ -23,6 +23,7 @@ from PySide6.QtUiTools import QUiLoader
 
 from python_code_editor import PythonCodeEditor
 from Core.window_registry import retain_window, switch_window
+from Core.action_icons import apply_action_icons
 
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -100,6 +101,7 @@ class ProjectEditor(QObject):
 
 
         self.window = load_ui(BASE_DIR / "ProjectWindow.ui")
+        apply_action_icons(self.window)
         self.window.setWindowTitle(f"PyForge Project - {self.project_root.name}")
 
         self._connect_actions()
