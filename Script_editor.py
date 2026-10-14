@@ -23,7 +23,7 @@ def _load_script_ui():
     ui_path = next((path for path in candidates if path.is_file()), None)
     if ui_path is None:
         raise FileNotFoundError(
-            "Could not find Script_editor.ui or Script_Editor.ui beside Script_editor.py"
+            "Could not find Script_editor.ui or Script_Editor.ui in the UI directory"
         )
     ui_file = QFile(str(ui_path))
     if not ui_file.open(QFile.OpenModeFlag.ReadOnly):
