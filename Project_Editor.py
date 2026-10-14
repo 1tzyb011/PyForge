@@ -100,7 +100,7 @@ class ProjectEditor(QObject):
         
 
 
-        self.window = load_ui(BASE_DIR / "ProjectWindow.ui")
+        self.window = load_ui(BASE_DIR / "UI" / "ProjectWindow.ui")
         apply_action_icons(self.window)
         self.window.setWindowTitle(f"PyForge Project - {self.project_root.name}")
 
