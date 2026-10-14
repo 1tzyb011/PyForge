@@ -4,6 +4,7 @@ import ast
 import os
 import sys
 from pathlib import Path
+import shutil
 
 from PySide6.QtCore import QFile, QEvent, QObject, QProcess, Qt
 from PySide6.QtWidgets import QFileDialog, QMessageBox, QPlainTextEdit, QTabWidget, QWidget
@@ -387,21 +388,40 @@ class ScriptEditor(QObject):
         self.terminal.ensureCursorVisible()
         self._terminal_input_start = len(self.terminal.toPlainText())
 
+   
     def _start_terminal(self):
-        shell = os.environ.get("COMSPEC", "cmd.exe") if os.name == "nt" else os.environ.get("SHELL", "/bin/bash")
+        if (
+            self.terminal_process
+            and self.terminal_process.state() != QProcess.ProcessState.NotRunning
+        ):
+            return
+
         process = QProcess(self)
         self.terminal_process = process
-        process.setProgram(shell)
+
         if os.name == "nt":
+            process.setProgram(os.environ.get("COMSPEC", "cmd.exe"))
             process.setArguments(["/Q"])
-        elif Path(shell).name == "bash":
-            # Do not load arbitrary interactive shell plugins during startup.
-            # Slow prompt managers or shell hooks can make the editor appear frozen.
-            process.setArguments(["--noprofile", "--norc", "-i"])
         else:
-            process.setArguments(["-i"])
-        process.setWorkingDirectory(str(self.current_file.parent if self.current_file else Path.home()))
-        process.setProcessChannelMode(QProcess.ProcessChannelMode.SeparateChannels)
+            shell = os.environ.get("SHELL", "/bin/bash")
+            setsid = shutil.which("setsid")
+
+            if setsid:
+                process.setProgram(setsid)
+                process.setArguments([shell])
+            else:
+                process.setProgram(shell)
+                process.setArguments([])
+
+        working_dir = (
+            str(self.current_file.parent)
+            if self.current_file
+            else str(Path.home())
+        )
+        process.setWorkingDirectory(working_dir)
+        process.setProcessChannelMode(
+            QProcess.ProcessChannelMode.SeparateChannels
+        )
         process.readyReadStandardOutput.connect(self._read_terminal_output)
         process.readyReadStandardError.connect(self._read_terminal_output)
         process.errorOccurred.connect(self._terminal_error)
