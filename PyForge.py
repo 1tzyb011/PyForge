@@ -7,7 +7,9 @@ from PySide6.QtWidgets import QApplication, QMessageBox
 
 from Core.diagnostics import install_diagnostics, log_event, start_ui_freeze_watchdog
 from Core.window_registry import retain_window
-from pyforge_theme.load_theme import apply_theme, apply_icons
+
+from pyforge_theme.load_theme import apply_theme, apply_icons, diagnose
+
 
 
 def main():
